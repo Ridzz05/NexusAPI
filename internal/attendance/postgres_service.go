@@ -12,10 +12,13 @@ import (
 
 	"github.com/Ridzz05/NexusAPI/internal/platform/events"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const maxEventClockSkew = 24 * time.Hour
+
+const maxSerializableAttempts = 3
 
 type PostgresService struct {
 	pool  *pgxpool.Pool
@@ -99,6 +102,20 @@ func (s *PostgresService) changeState(ctx context.Context, actor Actor, command 
 	if s.pool == nil {
 		return Event{}, errors.New("attendance database is not configured")
 	}
+	for attempt := 0; attempt < maxSerializableAttempts; attempt++ {
+		event, err := s.changeStateOnce(ctx, actor, command, memberID, kind, nextState)
+		if err == nil || !isRetryableTransactionError(err) || attempt == maxSerializableAttempts-1 {
+			return event, err
+		}
+		if err := waitForTransactionRetry(ctx, attempt); err != nil {
+			return Event{}, err
+		}
+	}
+	return Event{}, errors.New("attendance transaction retry limit exceeded")
+}
+
+func (s *PostgresService) changeStateOnce(ctx context.Context, actor Actor, command CheckCommand, memberID, kind, nextState string) (Event, error) {
+	now := s.clock()
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return Event{}, fmt.Errorf("begin attendance transaction: %w", err)
@@ -134,6 +151,25 @@ func (s *PostgresService) changeState(ctx context.Context, actor Actor, command 
 		return Event{}, fmt.Errorf("commit attendance transaction: %w", err)
 	}
 	return event, nil
+}
+
+func isRetryableTransactionError(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return pgErr.Code == "40001" || pgErr.Code == "40P01"
+}
+
+func waitForTransactionRetry(ctx context.Context, attempt int) error {
+	timer := time.NewTimer(time.Duration(attempt+1) * 10 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func upsertState(ctx context.Context, tx pgx.Tx, memberID, state string, now time.Time) error {

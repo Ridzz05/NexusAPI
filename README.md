@@ -97,7 +97,9 @@ Loyal Fitness endpoints are exposed as stable v1 routes, but their read model is
 
 ## Configuration and security
 
-Secrets are environment-only and are never logged. Production startup rejects missing or weak JWT secrets and missing database/Redis URLs. CORS origins must be explicit in production. Every request receives a request ID, and error responses never expose stack traces or internal error text.
+Secrets are environment-only and are never logged. Production startup rejects missing, weak, or documented placeholder JWT secrets and missing database/Redis URLs. CORS origins must be explicit in production. Every request receives a request ID, and error responses never expose stack traces or internal error text.
+
+Startup migrations take a PostgreSQL advisory lock, so concurrent API instances cannot apply the same migration simultaneously. Attendance state changes use serializable transactions with bounded retry for PostgreSQL serialization failures and deadlocks.
 
 ## Docker
 

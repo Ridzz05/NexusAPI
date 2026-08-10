@@ -13,7 +13,7 @@ This document records the current state against the goals in [`NexusAPI.md`](Nex
 | Migrations and explicit SQL | embedded migrations, sqlc config and generated code | Implemented |
 | Pagination and bounded filters | cursor pagination plus bounded member/PT filters | Implemented and unit-tested |
 | Observability and resilience | request IDs, structured logs, timeouts, panic recovery, rate limiting | Implemented and unit-tested |
-| Security defaults | secret validation, security headers, CORS, no raw QR storage | Implemented and unit-tested |
+| Security defaults | secret validation including production placeholder rejection, security headers, CORS, no raw QR storage | Implemented and unit-tested |
 | API contract | versioned OpenAPI source served from the binary | Implemented and YAML-validated |
 | Deployment | Docker, Compose, systemd, Caddy example | Implemented; live image/runtime requires Docker/VPS |
 | CI/CD foundation | formatting, sqlc drift, Go checks, Docker build, PostgreSQL integration job | Configured |

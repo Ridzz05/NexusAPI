@@ -17,7 +17,24 @@ import (
 var files embed.FS
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
-	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS nexus_schema_migrations (
+	if pool == nil {
+		return fmt.Errorf("migration pool is nil")
+	}
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration connection: %w", err)
+	}
+	defer conn.Release()
+
+	const lockName = "nexusapi:schema-migrations"
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended($1, 0))`, lockName); err != nil {
+		return fmt.Errorf("lock migrations: %w", err)
+	}
+	defer func() {
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, lockName)
+	}()
+
+	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS nexus_schema_migrations (
 		version TEXT PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`); err != nil {
@@ -33,7 +50,7 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) error {
 			continue
 		}
 		var applied bool
-		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM nexus_schema_migrations WHERE version = $1)`, entry.Name()).Scan(&applied); err != nil {
+		if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM nexus_schema_migrations WHERE version = $1)`, entry.Name()).Scan(&applied); err != nil {
 			return fmt.Errorf("check migration %s: %w", entry.Name(), err)
 		}
 		if applied {
@@ -43,7 +60,7 @@ func Apply(ctx context.Context, pool *pgxpool.Pool) error {
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", entry.Name(), err)
 		}
-		tx, err := pool.Begin(ctx)
+		tx, err := conn.Begin(ctx)
 		if err != nil {
 			return fmt.Errorf("begin migration %s: %w", entry.Name(), err)
 		}

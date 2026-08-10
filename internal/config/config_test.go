@@ -52,6 +52,14 @@ func TestConfigValidateRequiresProductionDependencies(t *testing.T) {
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected unsupported adapter URL scheme to be rejected")
 	}
+
+	cfg = validConfig()
+	cfg.AppEnv = "production"
+	cfg.JWTSecret = "replace-with-at-least-32-random-bytes"
+	cfg.CORSAllowedOrigins = []string{"https://app.example.com"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected the documented placeholder JWT secret to be rejected in production")
+	}
 }
 
 func TestSplitCSV(t *testing.T) {

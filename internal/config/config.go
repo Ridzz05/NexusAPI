@@ -134,6 +134,9 @@ func (c Config) Validate() error {
 	if len([]byte(c.JWTSecret)) < 32 {
 		return errors.New("JWT_SECRET must contain at least 32 bytes")
 	}
+	if strings.EqualFold(c.AppEnv, "production") && insecureJWTSecret(c.JWTSecret) {
+		return errors.New("JWT_SECRET must be replaced with a unique random value in production")
+	}
 	if c.DatabaseURL == "" {
 		return errors.New("DATABASE_URL must be configured")
 	}
@@ -153,6 +156,15 @@ func (c Config) Validate() error {
 		return errors.New("CORS_ALLOWED_ORIGINS must be explicit in production")
 	}
 	return nil
+}
+
+func insecureJWTSecret(secret string) bool {
+	switch strings.ToLower(strings.TrimSpace(secret)) {
+	case "replace-with-at-least-32-random-bytes", "change-me", "changeme", "secret":
+		return true
+	default:
+		return false
+	}
 }
 
 func env(key, fallback string) string {

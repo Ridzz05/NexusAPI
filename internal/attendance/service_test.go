@@ -1,8 +1,11 @@
 package attendance
 
 import (
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestCommandsValidateRequiredFields(t *testing.T) {
@@ -32,5 +35,17 @@ func TestActorCannotManageAnotherMemberByDefault(t *testing.T) {
 	device := Actor{Subject: "device-1", Roles: []string{"device"}}
 	if !device.CanSendHeartbeat() {
 		t.Fatal("device should send heartbeat")
+	}
+}
+
+func TestRetryableTransactionErrorsAreRecognized(t *testing.T) {
+	for _, code := range []string{"40001", "40P01"} {
+		err := fmt.Errorf("wrapped: %w", &pgconn.PgError{Code: code})
+		if !isRetryableTransactionError(err) {
+			t.Fatalf("expected PostgreSQL code %s to be retryable", code)
+		}
+	}
+	if isRetryableTransactionError(&pgconn.PgError{Code: "23505"}) {
+		t.Fatal("unique violations must not be retried")
 	}
 }
