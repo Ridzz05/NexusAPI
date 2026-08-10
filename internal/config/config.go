@@ -149,8 +149,8 @@ func (c Config) Validate() error {
 			return errors.New("LOYAL_FITNESS_BASE_URL must be an http or https URL")
 		}
 	}
-	if strings.EqualFold(c.AppEnv, "production") && contains(c.CORSAllowedOrigins, "*") {
-		return errors.New("CORS_ALLOWED_ORIGINS cannot be '*' in production")
+	if contains(c.CORSAllowedOrigins, "*") {
+		return errors.New("CORS_ALLOWED_ORIGINS must contain explicit origins; '*' is not supported")
 	}
 	if strings.EqualFold(c.AppEnv, "production") && len(c.CORSAllowedOrigins) == 0 {
 		return errors.New("CORS_ALLOWED_ORIGINS must be explicit in production")

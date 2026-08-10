@@ -58,7 +58,11 @@ func main() {
 	}
 	publisher := events.NewRedisPublisher(redis)
 	dispatcher := events.NewDispatcher(pool, publisher, logger, 2*time.Second)
-	go dispatcher.Run(rootContext)
+	dispatcherDone := make(chan struct{})
+	go func() {
+		defer close(dispatcherDone)
+		dispatcher.Run(rootContext)
+	}()
 	var loyalFitnessReader loyalfitness.Reader
 	if cfg.LoyalFitnessBaseURL != "" {
 		upstreamReader, err := loyalfitness.NewHTTPReader(cfg.LoyalFitnessBaseURL, cfg.LoyalFitnessToken, &http.Client{Timeout: cfg.LoyalFitnessTimeout})
@@ -97,6 +101,11 @@ func main() {
 		if err := httpServer.Shutdown(shutdownContext); err != nil {
 			logger.Error("graceful shutdown failed", "error", err)
 			os.Exit(1)
+		}
+		select {
+		case <-dispatcherDone:
+		case <-shutdownContext.Done():
+			logger.Warn("event dispatcher did not stop before shutdown deadline")
 		}
 		logger.Info("HTTP server stopped")
 	case err := <-serverErrors:

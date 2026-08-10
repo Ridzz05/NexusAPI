@@ -11,6 +11,7 @@ import (
 const (
 	DefaultPageSize = 20
 	MaxPageSize     = 100
+	MaxCursorLength = 512
 )
 
 type PageRequest struct {
@@ -27,18 +28,41 @@ func ParsePageRequest(r *http.Request) (PageRequest, error) {
 	limit := DefaultPageSize
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 || parsed > MaxPageSize {
+		if err != nil {
 			return PageRequest{}, errors.New("limit must be between 1 and 100")
 		}
 		limit = parsed
 	}
-	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
-	if cursor != "" {
-		if _, err := DecodeCursor(cursor); err != nil {
+	page, err := NormalizePageRequest(PageRequest{
+		Limit:  limit,
+		Cursor: r.URL.Query().Get("cursor"),
+	})
+	if err != nil {
+		return PageRequest{}, err
+	}
+	return page, nil
+}
+
+// NormalizePageRequest validates a page at a module boundary. HTTP handlers
+// use ParsePageRequest, but adapters and repositories can also be called
+// directly and must not accidentally receive an unbounded limit or cursor.
+func NormalizePageRequest(page PageRequest) (PageRequest, error) {
+	if page.Limit == 0 {
+		page.Limit = DefaultPageSize
+	}
+	if page.Limit < 1 || page.Limit > MaxPageSize {
+		return PageRequest{}, errors.New("limit must be between 1 and 100")
+	}
+	page.Cursor = strings.TrimSpace(page.Cursor)
+	if len(page.Cursor) > MaxCursorLength {
+		return PageRequest{}, errors.New("cursor is too long")
+	}
+	if page.Cursor != "" {
+		if _, err := DecodeCursor(page.Cursor); err != nil {
 			return PageRequest{}, errors.New("cursor is invalid")
 		}
 	}
-	return PageRequest{Limit: limit, Cursor: cursor}, nil
+	return page, nil
 }
 
 func EncodeCursor(value string) string {
@@ -46,6 +70,9 @@ func EncodeCursor(value string) string {
 }
 
 func DecodeCursor(cursor string) (string, error) {
+	if len(cursor) > MaxCursorLength {
+		return "", errors.New("cursor is too long")
+	}
 	decoded, err := base64.RawURLEncoding.DecodeString(cursor)
 	if err != nil || string(decoded) == "" {
 		return "", errors.New("invalid cursor")

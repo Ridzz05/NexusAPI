@@ -21,6 +21,16 @@ func TestParsePageRequestBoundsCollections(t *testing.T) {
 	if err != nil || page.Limit != 2 || page.Cursor == "" {
 		t.Fatalf("unexpected page request: %#v, %v", page, err)
 	}
+
+	tooLongCursor := strings.Repeat("a", MaxCursorLength+1)
+	if _, err := ParsePageRequest(httptest.NewRequest("GET", "/members?cursor="+tooLongCursor, nil)); err == nil {
+		t.Fatal("expected an oversized cursor to fail")
+	}
+
+	page, err = NormalizePageRequest(PageRequest{})
+	if err != nil || page.Limit != DefaultPageSize {
+		t.Fatalf("expected zero-value page to receive the default limit: %#v, %v", page, err)
+	}
 }
 
 func TestBoundedQueryParamRejectsOversizedFilters(t *testing.T) {

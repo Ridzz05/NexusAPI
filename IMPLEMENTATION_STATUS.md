@@ -39,4 +39,4 @@ The integration test package compiles locally and requires `DATABASE_URL` to exe
 
 ## Delivery boundary
 
-The local implementation commit is `0b982be` and has not been pushed. It uses the repository-local transparent agent identity `Codex <codex@localhost>`; no global Git identity was changed. The remote currently has no `main` branch.
+The last pushed implementation commit is `2c6dc17` on `origin/main`. This deeper audit currently has additional uncommitted local changes and has not been pushed. Commits use the repository-local transparent agent identity `Codex <codex@localhost>`; no global Git identity was changed.

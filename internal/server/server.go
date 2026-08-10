@@ -36,22 +36,33 @@ func New(cfg config.Config, deps Dependencies) *Server {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", s.health)
-	mux.HandleFunc("GET /readyz", s.ready)
-	mux.HandleFunc("GET /openapi.yaml", s.openapi)
-	mux.HandleFunc("/", s.notFound)
-
 	protected := func(handler http.HandlerFunc) http.Handler {
 		return access.Require(s.deps.Authenticator, http.HandlerFunc(handler))
 	}
-	mux.Handle("GET /api/v1/users/me", protected(s.currentUser))
-	mux.Handle("GET /api/v1/mobile/dashboard", protected(s.mobileDashboard))
-	mux.Handle("GET /api/v1/members", protected(s.members))
-	mux.Handle("GET /api/v1/pt-sessions", protected(s.ptSessions))
-	mux.Handle("GET /api/v1/finance/summary", protected(s.financeSummary))
-	mux.Handle("POST /api/v1/attendance/check-in", protected(s.checkIn))
-	mux.Handle("POST /api/v1/attendance/check-out", protected(s.checkOut))
-	mux.Handle("POST /api/v1/devices/heartbeat", protected(s.heartbeat))
+	register := func(method, path, allow string, handler http.Handler) {
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			s.methodNotAllowed(w, r, allow)
+		})
+		mux.Handle(method+" "+path, handler)
+	}
+	registerPrivate := func(method, path, allow string, handler http.HandlerFunc) {
+		mux.Handle(path, protected(func(w http.ResponseWriter, r *http.Request) {
+			s.methodNotAllowed(w, r, allow)
+		}))
+		mux.Handle(method+" "+path, protected(handler))
+	}
+	register(http.MethodGet, "/healthz", http.MethodGet, http.HandlerFunc(s.health))
+	register(http.MethodGet, "/readyz", http.MethodGet, http.HandlerFunc(s.ready))
+	register(http.MethodGet, "/openapi.yaml", http.MethodGet, http.HandlerFunc(s.openapi))
+	registerPrivate(http.MethodGet, "/api/v1/users/me", http.MethodGet, s.currentUser)
+	registerPrivate(http.MethodGet, "/api/v1/mobile/dashboard", http.MethodGet, s.mobileDashboard)
+	registerPrivate(http.MethodGet, "/api/v1/members", http.MethodGet, s.members)
+	registerPrivate(http.MethodGet, "/api/v1/pt-sessions", http.MethodGet, s.ptSessions)
+	registerPrivate(http.MethodGet, "/api/v1/finance/summary", http.MethodGet, s.financeSummary)
+	registerPrivate(http.MethodPost, "/api/v1/attendance/check-in", http.MethodPost, s.checkIn)
+	registerPrivate(http.MethodPost, "/api/v1/attendance/check-out", http.MethodPost, s.checkOut)
+	registerPrivate(http.MethodPost, "/api/v1/devices/heartbeat", http.MethodPost, s.heartbeat)
+	mux.HandleFunc("/", s.notFound)
 
 	return httpx.RequestIDMiddleware(
 		httpx.SecurityHeadersMiddleware(
@@ -84,12 +95,14 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
-	if s.deps.Readiness != nil {
-		if err := s.deps.Readiness(r.Context()); err != nil {
-			s.deps.Logger.Error("readiness check failed", "request_id", httpx.RequestID(r.Context()), "error", err)
-			httpx.Error(w, r, http.StatusServiceUnavailable, "not_ready", "service dependencies are not ready")
-			return
-		}
+	if s.deps.Readiness == nil {
+		httpx.Error(w, r, http.StatusServiceUnavailable, "not_ready", "readiness checks are not configured")
+		return
+	}
+	if err := s.deps.Readiness(r.Context()); err != nil {
+		s.deps.Logger.Error("readiness check failed", "request_id", httpx.RequestID(r.Context()), "error", err)
+		httpx.Error(w, r, http.StatusServiceUnavailable, "not_ready", "service dependencies are not ready")
+		return
 	}
 	httpx.JSON(w, r, http.StatusOK, map[string]string{"status": "ready"}, nil)
 }
@@ -102,6 +115,11 @@ func (s *Server) openapi(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {
 	httpx.Error(w, r, http.StatusNotFound, "not_found", "the requested resource was not found")
+}
+
+func (s *Server) methodNotAllowed(w http.ResponseWriter, r *http.Request, allow string) {
+	w.Header().Set("Allow", allow)
+	httpx.Error(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "the HTTP method is not allowed for this resource")
 }
 
 func (s *Server) currentUser(w http.ResponseWriter, r *http.Request) {
@@ -159,6 +177,11 @@ func (s *Server) members(w http.ResponseWriter, r *http.Request) {
 		s.integrationError(w, r, err)
 		return
 	}
+	if len(result.Items) > page.Limit {
+		s.deps.Logger.Error("Loyal Fitness adapter returned an unbounded member page", "request_id", httpx.RequestID(r.Context()), "items", len(result.Items), "limit", page.Limit)
+		s.integrationError(w, r, errors.New("member page exceeded requested limit"))
+		return
+	}
 	httpx.JSON(w, r, http.StatusOK, result.Items, &httpx.Meta{NextCursor: result.NextCursor, HasMore: result.HasMore})
 }
 
@@ -194,6 +217,11 @@ func (s *Server) ptSessions(w http.ResponseWriter, r *http.Request) {
 	result, err := s.deps.LoyalFitness.FindPTSessions(r.Context(), actorFromPrincipal(principal), loyalfitness.PTSessionFilter{Status: status, From: from, To: to}, page)
 	if err != nil {
 		s.integrationError(w, r, err)
+		return
+	}
+	if len(result.Items) > page.Limit {
+		s.deps.Logger.Error("Loyal Fitness adapter returned an unbounded PT session page", "request_id", httpx.RequestID(r.Context()), "items", len(result.Items), "limit", page.Limit)
+		s.integrationError(w, r, errors.New("PT session page exceeded requested limit"))
 		return
 	}
 	httpx.JSON(w, r, http.StatusOK, result.Items, &httpx.Meta{NextCursor: result.NextCursor, HasMore: result.HasMore})

@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"time"
 
+	dbgen "github.com/Ridzz05/NexusAPI/internal/platform/database/generated"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -28,9 +30,12 @@ func Enqueue(ctx context.Context, tx pgx.Tx, id, topic string, payload any, crea
 	if err != nil {
 		return fmt.Errorf("encode outbox payload: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO nexus_event_outbox (id, topic, payload, created_at)
-		VALUES ($1, $2, $3::jsonb, $4)`, id, topic, string(encoded), createdAt); err != nil {
+	if err := dbgen.New(tx).InsertEventOutbox(ctx, dbgen.InsertEventOutboxParams{
+		ID:        id,
+		Topic:     topic,
+		Payload:   encoded,
+		CreatedAt: pgtype.Timestamptz{Time: createdAt, Valid: true},
+	}); err != nil {
 		return fmt.Errorf("enqueue event: %w", err)
 	}
 	return nil
@@ -78,38 +83,19 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 		return fmt.Errorf("begin outbox dispatch: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `
-		SELECT id, topic, payload::text
-		FROM nexus_event_outbox
-		WHERE published_at IS NULL
-		ORDER BY created_at ASC
-		FOR UPDATE SKIP LOCKED
-		LIMIT $1`, d.batchSize)
+	queries := dbgen.New(tx)
+	items, err := queries.ListPendingEventOutbox(ctx, int32(d.batchSize))
 	if err != nil {
 		return fmt.Errorf("read event outbox: %w", err)
 	}
-	items := make([]outboxItem, 0, d.batchSize)
-	for rows.Next() {
-		var item outboxItem
-		if err := rows.Scan(&item.ID, &item.Topic, &item.Payload); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan event outbox: %w", err)
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("read event outbox rows: %w", err)
-	}
-	rows.Close()
 	for _, item := range items {
 		if err := d.publisher.Publish(ctx, item.Topic, json.RawMessage(item.Payload)); err != nil {
-			if _, updateErr := tx.Exec(ctx, `UPDATE nexus_event_outbox SET attempts = attempts + 1, last_error = LEFT($2, 500) WHERE id = $1`, item.ID, err.Error()); updateErr != nil {
+			if updateErr := queries.MarkEventOutboxFailure(ctx, dbgen.MarkEventOutboxFailureParams{LastError: err.Error(), ID: item.ID}); updateErr != nil {
 				return fmt.Errorf("record outbox failure: %w", updateErr)
 			}
 			continue
 		}
-		if _, err := tx.Exec(ctx, `UPDATE nexus_event_outbox SET published_at = NOW(), attempts = attempts + 1, last_error = NULL WHERE id = $1`, item.ID); err != nil {
+		if err := queries.MarkEventOutboxPublished(ctx, item.ID); err != nil {
 			return fmt.Errorf("mark event published: %w", err)
 		}
 	}
@@ -117,12 +103,6 @@ func (d *Dispatcher) DispatchOnce(ctx context.Context) error {
 		return fmt.Errorf("commit outbox dispatch: %w", err)
 	}
 	return nil
-}
-
-type outboxItem struct {
-	ID      string
-	Topic   string
-	Payload string
 }
 
 func isContextError(err error) bool {

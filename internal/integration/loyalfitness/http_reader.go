@@ -1,6 +1,7 @@
 package loyalfitness
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Ridzz05/NexusAPI/internal/platform/httpx"
 )
@@ -31,12 +33,22 @@ func NewHTTPReader(baseURL, token string, client *http.Client) (*HTTPReader, err
 		return nil, errors.New("Loyal Fitness base URL must be an http or https URL")
 	}
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: 10 * time.Second}
 	}
 	return &HTTPReader{baseURL: parsed, token: token, client: client}, nil
 }
 
 func (r *HTTPReader) FindMembers(ctx context.Context, actor Actor, filter MemberFilter, page httpx.PageRequest) (MembersPage, error) {
+	var err error
+	if err := validateActor(actor); err != nil {
+		return MembersPage{}, err
+	}
+	if page, err = normalizePage(page); err != nil {
+		return MembersPage{}, err
+	}
+	if err := validateMemberFilter(filter); err != nil {
+		return MembersPage{}, err
+	}
 	var response httpx.Envelope[[]Member]
 	values := actorValues(actor)
 	setPageValues(values, page)
@@ -45,10 +57,23 @@ func (r *HTTPReader) FindMembers(ctx context.Context, actor Actor, filter Member
 	if err := r.get(ctx, "/api/v1/members", values, &response); err != nil {
 		return MembersPage{}, err
 	}
+	if len(response.Data) > page.Limit {
+		return MembersPage{}, fmt.Errorf("%w: member page exceeds requested limit", ErrUpstream)
+	}
 	return MembersPage{Items: response.Data, NextCursor: nextCursor(response.Meta), HasMore: hasMore(response.Meta)}, nil
 }
 
 func (r *HTTPReader) FindPTSessions(ctx context.Context, actor Actor, filter PTSessionFilter, page httpx.PageRequest) (PTSessionsPage, error) {
+	var err error
+	if err := validateActor(actor); err != nil {
+		return PTSessionsPage{}, err
+	}
+	if page, err = normalizePage(page); err != nil {
+		return PTSessionsPage{}, err
+	}
+	if err := validatePTSessionFilter(filter); err != nil {
+		return PTSessionsPage{}, err
+	}
 	var response httpx.Envelope[[]PTSession]
 	values := actorValues(actor)
 	setPageValues(values, page)
@@ -58,10 +83,16 @@ func (r *HTTPReader) FindPTSessions(ctx context.Context, actor Actor, filter PTS
 	if err := r.get(ctx, "/api/v1/pt-sessions", values, &response); err != nil {
 		return PTSessionsPage{}, err
 	}
+	if len(response.Data) > page.Limit {
+		return PTSessionsPage{}, fmt.Errorf("%w: PT session page exceeds requested limit", ErrUpstream)
+	}
 	return PTSessionsPage{Items: response.Data, NextCursor: nextCursor(response.Meta), HasMore: hasMore(response.Meta)}, nil
 }
 
 func (r *HTTPReader) FinanceSummary(ctx context.Context, actor Actor) (FinanceSummary, error) {
+	if err := validateActor(actor); err != nil {
+		return FinanceSummary{}, err
+	}
 	var response httpx.Envelope[FinanceSummary]
 	if err := r.get(ctx, "/api/v1/finance/summary", actorValues(actor), &response); err != nil {
 		return FinanceSummary{}, err
@@ -70,6 +101,9 @@ func (r *HTTPReader) FinanceSummary(ctx context.Context, actor Actor) (FinanceSu
 }
 
 func (r *HTTPReader) MobileDashboard(ctx context.Context, actor Actor) (MobileDashboard, error) {
+	if err := validateActor(actor); err != nil {
+		return MobileDashboard{}, err
+	}
 	var response httpx.Envelope[MobileDashboard]
 	if err := r.get(ctx, "/api/v1/mobile/dashboard", actorValues(actor), &response); err != nil {
 		return MobileDashboard{}, err
@@ -98,9 +132,24 @@ func (r *HTTPReader) get(ctx context.Context, path string, values url.Values, ta
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 		return fmt.Errorf("%w: status %d", ErrUpstream, response.StatusCode)
 	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, 2<<20))
+	const maxResponseBytes = 2 << 20
+	if response.ContentLength > maxResponseBytes {
+		return fmt.Errorf("%w: upstream response is too large", ErrUpstream)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("%w: read upstream response: %v", ErrUpstream, err)
+	}
+	if len(body) > maxResponseBytes {
+		return fmt.Errorf("%w: upstream response is too large", ErrUpstream)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err := decoder.Decode(target); err != nil {
 		return fmt.Errorf("decode upstream response: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("decode upstream response: trailing data")
 	}
 	return nil
 }

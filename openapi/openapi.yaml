@@ -20,8 +20,7 @@ paths:
       responses:
         '200':
           description: Dependencies are ready.
-        '503':
-          description: A required dependency is unavailable.
+        '503': {$ref: '#/components/responses/NotReady'}
   /api/v1/users/me:
     get:
       operationId: currentUser
@@ -32,7 +31,7 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PrincipalEnvelope'}
-        '401': {description: Authentication required.}
+        '401': {$ref: '#/components/responses/Unauthorized'}
   /api/v1/mobile/dashboard:
     get:
       operationId: mobileDashboard
@@ -43,7 +42,7 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/MobileDashboardEnvelope'}
-        '501': {description: Read adapter is not configured.}
+        '501': {$ref: '#/components/responses/NotImplemented'}
   /api/v1/members:
     get:
       operationId: listMembers
@@ -52,15 +51,15 @@ paths:
         - {$ref: '#/components/parameters/Limit'}
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Status'}
-        - {name: q, in: query, schema: {type: string}}
+        - {name: q, in: query, schema: {type: string, maxLength: 100}}
       responses:
         '200':
           description: Bounded member page.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/MemberPageEnvelope'}
-        '400': {description: Invalid pagination.}
-        '501': {description: Read adapter is not configured.}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
   /api/v1/pt-sessions:
     get:
       operationId: listPTSessions
@@ -77,7 +76,7 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/PTSessionPageEnvelope'}
-        '501': {description: Read adapter is not configured.}
+        '501': {$ref: '#/components/responses/NotImplemented'}
   /api/v1/finance/summary:
     get:
       operationId: financeSummary
@@ -88,7 +87,7 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/FinanceSummaryEnvelope'}
-        '501': {description: Read adapter is not configured.}
+        '501': {$ref: '#/components/responses/NotImplemented'}
   /api/v1/attendance/check-in:
     post:
       operationId: checkIn
@@ -104,8 +103,10 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/AttendanceEventEnvelope'}
-        '400': {description: Invalid command body.}
-        '501': {description: Attendance service is not configured.}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
   /api/v1/attendance/check-out:
     post:
       operationId: checkOut
@@ -121,8 +122,10 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/AttendanceEventEnvelope'}
-        '400': {description: Invalid command body.}
-        '501': {description: Attendance service is not configured.}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
   /api/v1/devices/heartbeat:
     post:
       operationId: deviceHeartbeat
@@ -138,8 +141,9 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/AttendanceEventEnvelope'}
-        '400': {description: Invalid heartbeat body.}
-        '501': {description: Attendance service is not configured.}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
 components:
   schemas:
     Meta:
@@ -262,6 +266,37 @@ components:
       properties:
         data: {$ref: '#/components/schemas/AttendanceEvent'}
         request_id: {type: string}
+  responses:
+    BadRequest:
+      description: The request is invalid.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    Unauthorized:
+      description: Authentication is required or invalid.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    Forbidden:
+      description: The authenticated principal is not authorized.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    Conflict:
+      description: The requested state transition conflicts with current state.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    NotReady:
+      description: A required dependency is unavailable.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    NotImplemented:
+      description: The optional service is not configured.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
   securitySchemes:
     bearerAuth:
       type: http
@@ -275,7 +310,7 @@ components:
     Cursor:
       name: cursor
       in: query
-      schema: {type: string}
+      schema: {type: string, maxLength: 512}
     Status:
       name: status
       in: query

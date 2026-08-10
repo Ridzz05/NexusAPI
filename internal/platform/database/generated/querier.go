@@ -9,9 +9,17 @@ import (
 )
 
 type Querier interface {
+	GetAttendanceMemberState(ctx context.Context, memberID string) (string, error)
+	InsertAttendanceEvent(ctx context.Context, arg InsertAttendanceEventParams) error
+	InsertEventOutbox(ctx context.Context, arg InsertEventOutboxParams) error
 	// This directory is the sqlc boundary for domain queries.
 	// Domain modules should add explicit, bounded queries here rather than using SELECT *.
 	ListAppliedMigrations(ctx context.Context, limit int32) ([]NexusSchemaMigration, error)
+	ListPendingEventOutbox(ctx context.Context, limit int32) ([]ListPendingEventOutboxRow, error)
+	MarkEventOutboxFailure(ctx context.Context, arg MarkEventOutboxFailureParams) error
+	MarkEventOutboxPublished(ctx context.Context, id string) error
+	UpsertAttendanceDeviceHeartbeat(ctx context.Context, arg UpsertAttendanceDeviceHeartbeatParams) error
+	UpsertAttendanceMemberState(ctx context.Context, arg UpsertAttendanceMemberStateParams) error
 }
 
 var _ Querier = (*Queries)(nil)

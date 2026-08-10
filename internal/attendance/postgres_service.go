@@ -10,9 +10,11 @@ import (
 	"strings"
 	"time"
 
+	dbgen "github.com/Ridzz05/NexusAPI/internal/platform/database/generated"
 	"github.com/Ridzz05/NexusAPI/internal/platform/events"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -57,22 +59,29 @@ func (s *PostgresService) Heartbeat(ctx context.Context, actor Actor, command He
 	}
 	defer tx.Rollback(ctx)
 	deviceID := actor.Subject
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO attendance_device_heartbeats (device_id, actor_subject, firmware_version, observed_at, created_at)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (device_id) DO UPDATE SET
-			actor_subject = EXCLUDED.actor_subject,
-			firmware_version = EXCLUDED.firmware_version,
-			observed_at = EXCLUDED.observed_at,
-			created_at = EXCLUDED.created_at`,
-		deviceID, actor.Subject, command.FirmwareVersion, command.ObservedAt, now); err != nil {
+	queries := dbgen.New(tx)
+	if err := queries.UpsertAttendanceDeviceHeartbeat(ctx, dbgen.UpsertAttendanceDeviceHeartbeatParams{
+		DeviceID:        deviceID,
+		ActorSubject:    actor.Subject,
+		FirmwareVersion: command.FirmwareVersion,
+		ObservedAt:      pgtype.Timestamptz{Time: command.ObservedAt, Valid: true},
+		CreatedAt:       pgtype.Timestamptz{Time: now, Valid: true},
+	}); err != nil {
 		return Event{}, fmt.Errorf("store heartbeat: %w", err)
 	}
-	event := Event{ID: newID(), Kind: "heartbeat", DeviceID: deviceID, OccurredAt: command.ObservedAt}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO attendance_events (id, kind, device_id, actor_subject, occurred_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		event.ID, event.Kind, event.DeviceID, actor.Subject, event.OccurredAt, now); err != nil {
+	eventID, err := newID()
+	if err != nil {
+		return Event{}, err
+	}
+	event := Event{ID: eventID, Kind: "heartbeat", DeviceID: deviceID, OccurredAt: command.ObservedAt}
+	if err := queries.InsertAttendanceEvent(ctx, dbgen.InsertAttendanceEventParams{
+		ID:           event.ID,
+		Kind:         event.Kind,
+		DeviceID:     event.DeviceID,
+		ActorSubject: actor.Subject,
+		OccurredAt:   pgtype.Timestamptz{Time: event.OccurredAt, Valid: true},
+		CreatedAt:    pgtype.Timestamptz{Time: now, Valid: true},
+	}); err != nil {
 		return Event{}, fmt.Errorf("store heartbeat event: %w", err)
 	}
 	if err := events.Enqueue(ctx, tx, event.ID, events.AttendanceTopic, event, now); err != nil {
@@ -121,9 +130,10 @@ func (s *PostgresService) changeStateOnce(ctx context.Context, actor Actor, comm
 		return Event{}, fmt.Errorf("begin attendance transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	queries := dbgen.New(tx)
 
 	var currentState string
-	err = tx.QueryRow(ctx, `SELECT state FROM attendance_member_state WHERE member_id = $1 FOR UPDATE`, memberID).Scan(&currentState)
+	currentState, err = queries.GetAttendanceMemberState(ctx, memberID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return Event{}, fmt.Errorf("read attendance state: %w", err)
 	}
@@ -133,15 +143,29 @@ func (s *PostgresService) changeStateOnce(ctx context.Context, actor Actor, comm
 	if kind == "check_out" && currentState != "checked_in" {
 		return Event{}, ErrConflict
 	}
-	if err := upsertState(ctx, tx, memberID, nextState, now); err != nil {
+	if err := queries.UpsertAttendanceMemberState(ctx, dbgen.UpsertAttendanceMemberStateParams{
+		MemberID:  memberID,
+		State:     nextState,
+		UpdatedAt: pgtype.Timestamptz{Time: now, Valid: true},
+	}); err != nil {
+		return Event{}, fmt.Errorf("update attendance state: %w", err)
+	}
+	eventID, err := newID()
+	if err != nil {
 		return Event{}, err
 	}
-	event := Event{ID: newID(), Kind: kind, MemberID: memberID, DeviceID: actor.Subject, OccurredAt: command.OccurredAt}
+	event := Event{ID: eventID, Kind: kind, MemberID: memberID, DeviceID: actor.Subject, OccurredAt: command.OccurredAt}
 	qrHash := sha256.Sum256([]byte(command.QRToken))
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO attendance_events (id, kind, member_id, device_id, actor_subject, qr_token_hash, occurred_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		event.ID, event.Kind, event.MemberID, event.DeviceID, actor.Subject, hex.EncodeToString(qrHash[:]), event.OccurredAt, now); err != nil {
+	if err := queries.InsertAttendanceEvent(ctx, dbgen.InsertAttendanceEventParams{
+		ID:           event.ID,
+		Kind:         event.Kind,
+		MemberID:     pgtype.Text{String: event.MemberID, Valid: true},
+		DeviceID:     event.DeviceID,
+		ActorSubject: actor.Subject,
+		QrTokenHash:  pgtype.Text{String: hex.EncodeToString(qrHash[:]), Valid: true},
+		OccurredAt:   pgtype.Timestamptz{Time: event.OccurredAt, Valid: true},
+		CreatedAt:    pgtype.Timestamptz{Time: now, Valid: true},
+	}); err != nil {
 		return Event{}, fmt.Errorf("store attendance event: %w", err)
 	}
 	if err := events.Enqueue(ctx, tx, event.ID, events.AttendanceTopic, event, now); err != nil {
@@ -172,20 +196,10 @@ func waitForTransactionRetry(ctx context.Context, attempt int) error {
 	}
 }
 
-func upsertState(ctx context.Context, tx pgx.Tx, memberID, state string, now time.Time) error {
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO attendance_member_state (member_id, state, updated_at)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (member_id) DO UPDATE SET state = EXCLUDED.state, updated_at = EXCLUDED.updated_at`, memberID, state, now); err != nil {
-		return fmt.Errorf("update attendance state: %w", err)
-	}
-	return nil
-}
-
-func newID() string {
+func newID() (string, error) {
 	bytes := make([]byte, 16)
 	if _, err := rand.Read(bytes); err != nil {
-		return hex.EncodeToString([]byte(time.Now().UTC().Format(time.RFC3339Nano)))
+		return "", fmt.Errorf("generate event ID: %w", err)
 	}
-	return hex.EncodeToString(bytes)
+	return hex.EncodeToString(bytes), nil
 }

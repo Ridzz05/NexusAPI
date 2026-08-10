@@ -63,6 +63,15 @@ func TestHealthIncludesRequestIDAndStableEnvelope(t *testing.T) {
 	}
 }
 
+func TestReadinessFailsClosedWithoutDependencyCheck(t *testing.T) {
+	api := New(testConfig(), Dependencies{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	recorder := httptest.NewRecorder()
+	api.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"code":"not_ready"`) {
+		t.Fatalf("unexpected readiness response: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestPrivateRoutesRejectMissingCredentials(t *testing.T) {
 	api := New(testConfig(), Dependencies{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
@@ -84,6 +93,24 @@ func TestUnknownRoutesUseStandardErrorEnvelope(t *testing.T) {
 	api.Handler().ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), `"code":"not_found"`) {
 		t.Fatalf("unexpected not-found response: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestKnownRouteWithWrongMethodUsesStandardErrorEnvelope(t *testing.T) {
+	api := New(testConfig(), Dependencies{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	recorder := httptest.NewRecorder()
+	api.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/healthz", nil))
+	if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != http.MethodGet || !strings.Contains(recorder.Body.String(), `"code":"method_not_allowed"`) {
+		t.Fatalf("unexpected method response: %d allow=%q body=%s", recorder.Code, recorder.Header().Get("Allow"), recorder.Body.String())
+	}
+}
+
+func TestPrivateRouteWithWrongMethodStillRequiresAuthentication(t *testing.T) {
+	api := New(testConfig(), Dependencies{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	recorder := httptest.NewRecorder()
+	api.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/users/me", nil))
+	if recorder.Code != http.StatusUnauthorized || !strings.Contains(recorder.Body.String(), `"code":"unauthorized"`) {
+		t.Fatalf("unexpected private method response: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -135,6 +162,21 @@ func TestMemberFilterIsBoundedBeforeAdapter(t *testing.T) {
 	api.Handler().ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"code":"invalid_filter"`) {
 		t.Fatalf("unexpected filter response: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestMemberReadRejectsAdapterPageThatExceedsRequestedLimit(t *testing.T) {
+	api := New(testConfig(), Dependencies{
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Authenticator: scopedAuthenticator{},
+		LoyalFitness:  oversizedReader{},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/members?limit=1", nil)
+	req.Header.Set("Authorization", "Bearer accepted-in-test")
+	recorder := httptest.NewRecorder()
+	api.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusBadGateway || !strings.Contains(recorder.Body.String(), `"code":"integration_error"`) {
+		t.Fatalf("unexpected oversized page response: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -193,6 +235,24 @@ type recordingReader struct {
 	actor  loyalfitness.Actor
 	filter loyalfitness.MemberFilter
 	page   httpx.PageRequest
+}
+
+type oversizedReader struct{}
+
+func (oversizedReader) FindMembers(context.Context, loyalfitness.Actor, loyalfitness.MemberFilter, httpx.PageRequest) (loyalfitness.MembersPage, error) {
+	return loyalfitness.MembersPage{Items: []loyalfitness.Member{{ID: "m-1"}, {ID: "m-2"}}}, nil
+}
+
+func (oversizedReader) FindPTSessions(context.Context, loyalfitness.Actor, loyalfitness.PTSessionFilter, httpx.PageRequest) (loyalfitness.PTSessionsPage, error) {
+	return loyalfitness.PTSessionsPage{}, nil
+}
+
+func (oversizedReader) FinanceSummary(context.Context, loyalfitness.Actor) (loyalfitness.FinanceSummary, error) {
+	return loyalfitness.FinanceSummary{}, nil
+}
+
+func (oversizedReader) MobileDashboard(context.Context, loyalfitness.Actor) (loyalfitness.MobileDashboard, error) {
+	return loyalfitness.MobileDashboard{}, nil
 }
 
 type recordingAttendance struct {

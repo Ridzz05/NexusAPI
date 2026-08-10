@@ -21,62 +21,119 @@ type CachedReader struct {
 }
 
 func NewCachedReader(next Reader, store cache.Store, ttl time.Duration) *CachedReader {
+	if ttl <= 0 {
+		ttl = 30 * time.Second
+	}
 	return &CachedReader{next: next, store: store, ttl: ttl}
 }
 
 func (r *CachedReader) FindMembers(ctx context.Context, actor Actor, filter MemberFilter, page httpx.PageRequest) (MembersPage, error) {
+	if r.next == nil {
+		return MembersPage{}, ErrReaderUnavailable
+	}
+	var err error
+	if err := validateActor(actor); err != nil {
+		return MembersPage{}, err
+	}
+	if page, err = normalizePage(page); err != nil {
+		return MembersPage{}, err
+	}
+	if err := validateMemberFilter(filter); err != nil {
+		return MembersPage{}, err
+	}
 	key := cacheKey("members", actor, filter.Query+"\x00"+filter.Status, page)
 	var result MembersPage
-	if found, _ := cache.GetJSON(ctx, r.store, key, &result); found {
-		return result, nil
+	if r.store != nil {
+		if found, _ := cache.GetJSON(ctx, r.store, key, &result); found {
+			return result, nil
+		}
 	}
-	result, err := r.next.FindMembers(ctx, actor, filter, page)
+	result, err = r.next.FindMembers(ctx, actor, filter, page)
 	if err != nil {
 		return MembersPage{}, err
 	}
-	_ = cache.SetJSON(ctx, r.store, key, result, r.ttl)
+	if r.store != nil {
+		_ = cache.SetJSON(ctx, r.store, key, result, r.ttl)
+	}
 	return result, nil
 }
 
 func (r *CachedReader) FindPTSessions(ctx context.Context, actor Actor, filter PTSessionFilter, page httpx.PageRequest) (PTSessionsPage, error) {
+	if r.next == nil {
+		return PTSessionsPage{}, ErrReaderUnavailable
+	}
+	var err error
+	if err := validateActor(actor); err != nil {
+		return PTSessionsPage{}, err
+	}
+	if page, err = normalizePage(page); err != nil {
+		return PTSessionsPage{}, err
+	}
+	if err := validatePTSessionFilter(filter); err != nil {
+		return PTSessionsPage{}, err
+	}
 	key := cacheKey("pt-sessions", actor, filter.Status+"\x00"+filter.From+"\x00"+filter.To, page)
 	var result PTSessionsPage
-	if found, _ := cache.GetJSON(ctx, r.store, key, &result); found {
-		return result, nil
+	if r.store != nil {
+		if found, _ := cache.GetJSON(ctx, r.store, key, &result); found {
+			return result, nil
+		}
 	}
-	result, err := r.next.FindPTSessions(ctx, actor, filter, page)
+	result, err = r.next.FindPTSessions(ctx, actor, filter, page)
 	if err != nil {
 		return PTSessionsPage{}, err
 	}
-	_ = cache.SetJSON(ctx, r.store, key, result, r.ttl)
+	if r.store != nil {
+		_ = cache.SetJSON(ctx, r.store, key, result, r.ttl)
+	}
 	return result, nil
 }
 
 func (r *CachedReader) FinanceSummary(ctx context.Context, actor Actor) (FinanceSummary, error) {
+	if r.next == nil {
+		return FinanceSummary{}, ErrReaderUnavailable
+	}
+	if err := validateActor(actor); err != nil {
+		return FinanceSummary{}, err
+	}
 	key := cacheKey("finance-summary", actor, "", httpx.PageRequest{})
 	var result FinanceSummary
-	if found, _ := cache.GetJSON(ctx, r.store, key, &result); found {
-		return result, nil
+	if r.store != nil {
+		if found, _ := cache.GetJSON(ctx, r.store, key, &result); found {
+			return result, nil
+		}
 	}
 	result, err := r.next.FinanceSummary(ctx, actor)
 	if err != nil {
 		return FinanceSummary{}, err
 	}
-	_ = cache.SetJSON(ctx, r.store, key, result, r.ttl)
+	if r.store != nil {
+		_ = cache.SetJSON(ctx, r.store, key, result, r.ttl)
+	}
 	return result, nil
 }
 
 func (r *CachedReader) MobileDashboard(ctx context.Context, actor Actor) (MobileDashboard, error) {
+	if r.next == nil {
+		return MobileDashboard{}, ErrReaderUnavailable
+	}
+	if err := validateActor(actor); err != nil {
+		return MobileDashboard{}, err
+	}
 	key := cacheKey("mobile-dashboard", actor, "", httpx.PageRequest{})
 	var result MobileDashboard
-	if found, _ := cache.GetJSON(ctx, r.store, key, &result); found {
-		return result, nil
+	if r.store != nil {
+		if found, _ := cache.GetJSON(ctx, r.store, key, &result); found {
+			return result, nil
+		}
 	}
 	result, err := r.next.MobileDashboard(ctx, actor)
 	if err != nil {
 		return MobileDashboard{}, err
 	}
-	_ = cache.SetJSON(ctx, r.store, key, result, r.ttl)
+	if r.store != nil {
+		_ = cache.SetJSON(ctx, r.store, key, result, r.ttl)
+	}
 	return result, nil
 }
 

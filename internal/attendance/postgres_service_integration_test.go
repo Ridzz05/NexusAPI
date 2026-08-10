@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -109,6 +110,67 @@ func TestPostgresAttendanceStateAndOutbox(t *testing.T) {
 	}
 	if published != 3 {
 		t.Fatalf("expected three published outbox events, got %d", published)
+	}
+}
+
+func TestConcurrentCheckInsResolveThroughSerializableRetry(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Fatal("DATABASE_URL is required for integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	pool := openIntegrationPool(ctx, databaseURL)
+	if pool == nil {
+		t.Fatal("could not connect to PostgreSQL")
+	}
+	defer pool.Close()
+	if err := migrations.Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+
+	memberID := fmt.Sprintf("concurrent-member-%d", time.Now().UnixNano())
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM nexus_event_outbox WHERE payload->>'member_id' = $1`, memberID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM attendance_events WHERE member_id = $1`, memberID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM attendance_member_state WHERE member_id = $1`, memberID)
+	}()
+
+	service := NewPostgresService(pool)
+	service.clock = func() time.Time { return now }
+	actor := Actor{Subject: memberID, Roles: []string{"member"}}
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var group sync.WaitGroup
+	group.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer group.Done()
+			<-start
+			_, err := service.CheckIn(ctx, actor, CheckCommand{QRToken: "concurrent-qr", OccurredAt: now})
+			results <- err
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(results)
+
+	var success, conflict int
+	for err := range results {
+		switch {
+		case err == nil:
+			success++
+		case errors.Is(err, ErrConflict):
+			conflict++
+		default:
+			t.Fatalf("unexpected concurrent check-in error: %v", err)
+		}
+	}
+	if success != 1 || conflict != 1 {
+		t.Fatalf("expected one success and one conflict, got success=%d conflict=%d", success, conflict)
 	}
 }
 

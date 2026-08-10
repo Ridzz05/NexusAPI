@@ -65,6 +65,28 @@ func TestJWTAuthenticatorValidatesIssuerAndAudienceWhenConfigured(t *testing.T) 
 	}
 }
 
+func TestJWTAuthenticatorUsesFractionalNumericDateAndRejectsOutOfRangeValues(t *testing.T) {
+	secret := "01234567890123456789012345678901"
+	authenticator, err := NewJWTAuthenticator(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 600_000_000)
+	fractionalExpiry := signTestToken(t, secret, map[string]any{
+		"sub": "user-123", "exp": json.Number("1700000000.5"),
+	})
+	if _, err := authenticator.Authenticate(fractionalExpiry, now); err == nil {
+		t.Fatal("expected a token past a fractional expiry to be rejected")
+	}
+
+	outOfRange := signTestToken(t, secret, map[string]any{
+		"sub": "user-123", "exp": json.Number("1e100"),
+	})
+	if _, err := authenticator.Authenticate(outOfRange, time.Unix(1_700_000_000, 0)); err == nil {
+		t.Fatal("expected an out-of-range numeric date to be rejected")
+	}
+}
+
 func signTestToken(t *testing.T, secret string, claims map[string]any) string {
 	t.Helper()
 	encode := func(value any) string {

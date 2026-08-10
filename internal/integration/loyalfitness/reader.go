@@ -2,9 +2,46 @@ package loyalfitness
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/Ridzz05/NexusAPI/internal/platform/httpx"
 )
+
+var (
+	ErrInvalidReadRequest = errors.New("invalid Loyal Fitness read request")
+	ErrReaderUnavailable  = errors.New("Loyal Fitness reader is unavailable")
+)
+
+func normalizePage(page httpx.PageRequest) (httpx.PageRequest, error) {
+	normalized, err := httpx.NormalizePageRequest(page)
+	if err != nil {
+		return httpx.PageRequest{}, fmt.Errorf("%w: %v", ErrInvalidReadRequest, err)
+	}
+	return normalized, nil
+}
+
+func validateMemberFilter(filter MemberFilter) error {
+	if len(filter.Query) > 100 || len(filter.Status) > 40 {
+		return ErrInvalidReadRequest
+	}
+	return nil
+}
+
+func validateActor(actor Actor) error {
+	if actor.Subject == "" || actor.Subject != strings.TrimSpace(actor.Subject) {
+		return ErrInvalidReadRequest
+	}
+	return nil
+}
+
+func validatePTSessionFilter(filter PTSessionFilter) error {
+	if len(filter.Status) > 40 || len(filter.From) > 40 || len(filter.To) > 40 {
+		return ErrInvalidReadRequest
+	}
+	return nil
+}
 
 // Reader is the seam for the first incremental Loyal Fitness migration. An
 // implementation can read from Laravel, a replicated PostgreSQL schema, or a

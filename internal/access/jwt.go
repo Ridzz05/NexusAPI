@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -89,12 +90,12 @@ func (a *JWTAuthenticator) Authenticate(token string, now time.Time) (Principal,
 		return Principal{}, ErrInvalidToken
 	}
 	expiresAt, err := numericClaim(claims, "exp")
-	if err != nil || now.Unix() >= int64(expiresAt) {
+	if err != nil || unixSeconds(now) >= expiresAt {
 		return Principal{}, ErrInvalidToken
 	}
 	if raw, ok := claims["nbf"]; ok {
-		var notBefore float64
-		if err := json.Unmarshal(raw, &notBefore); err != nil || now.Unix() < int64(notBefore) {
+		notBefore, err := numericRawClaim(raw)
+		if err != nil || unixSeconds(now) < notBefore {
 			return Principal{}, ErrInvalidToken
 		}
 	}
@@ -148,11 +149,23 @@ func numericClaim(claims map[string]json.RawMessage, name string) (float64, erro
 	if !ok {
 		return 0, fmt.Errorf("missing %s claim", name)
 	}
-	var number float64
+	return numericRawClaim(value)
+}
+
+func numericRawClaim(value json.RawMessage) (float64, error) {
+	var number json.Number
 	if err := json.Unmarshal(value, &number); err != nil {
 		return 0, err
 	}
-	return number, nil
+	parsed, err := number.Float64()
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed > 1<<62 || parsed < -(1<<62) {
+		return 0, errors.New("numeric date is out of range")
+	}
+	return parsed, nil
+}
+
+func unixSeconds(value time.Time) float64 {
+	return float64(value.Unix()) + float64(value.Nanosecond())/1e9
 }
 
 func claimContains(raw json.RawMessage, expected string) bool {

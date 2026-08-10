@@ -86,6 +86,56 @@ func TestHTTPReaderForwardsPTSessionFilters(t *testing.T) {
 	}
 }
 
+func TestHTTPReaderRejectsPageFromUpstreamThatExceedsLimit(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"m-1"},{"id":"m-2"}],"meta":{"has_more":true}}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	reader, err := NewHTTPReader("https://source.example", "", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = reader.FindMembers(context.Background(), Actor{Subject: "user-1"}, MemberFilter{}, httpx.PageRequest{Limit: 1})
+	if err == nil || !strings.Contains(err.Error(), "exceeds requested limit") {
+		t.Fatalf("expected oversized upstream page error, got %v", err)
+	}
+}
+
+func TestHTTPReaderRejectsTrailingUpstreamJSON(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"data":{"period":"2026","total":1,"currency":"IDR"}} {"unexpected":true}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	reader, err := NewHTTPReader("https://source.example", "", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = reader.FinanceSummary(context.Background(), Actor{Subject: "user-1"})
+	if err == nil || !strings.Contains(err.Error(), "trailing data") {
+		t.Fatalf("expected trailing JSON error, got %v", err)
+	}
+}
+
+func TestHTTPReaderRejectsUnboundedDirectReadRequest(t *testing.T) {
+	reader, err := NewHTTPReader("https://source.example", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = reader.FindMembers(context.Background(), Actor{Subject: "user-1"}, MemberFilter{}, httpx.PageRequest{Limit: httpx.MaxPageSize + 1})
+	if err == nil || !strings.Contains(err.Error(), "invalid Loyal Fitness read request") {
+		t.Fatalf("expected bounded page validation error, got %v", err)
+	}
+	if _, err := reader.FinanceSummary(context.Background(), Actor{}); err == nil || !strings.Contains(err.Error(), "invalid Loyal Fitness read request") {
+		t.Fatalf("expected empty actor validation error, got %v", err)
+	}
+}
+
 func TestHTTPReaderRejectsUnsupportedURL(t *testing.T) {
 	if _, err := NewHTTPReader("ftp://source.example", "", nil); err == nil {
 		t.Fatal("expected unsupported URL scheme to be rejected")

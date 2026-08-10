@@ -60,6 +60,12 @@ func TestConfigValidateRequiresProductionDependencies(t *testing.T) {
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected the documented placeholder JWT secret to be rejected in production")
 	}
+
+	cfg = validConfig()
+	cfg.CORSAllowedOrigins = []string{"*"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected wildcard CORS origin to be rejected")
+	}
 }
 
 func TestSplitCSV(t *testing.T) {
