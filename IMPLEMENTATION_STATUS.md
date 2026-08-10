@@ -39,4 +39,4 @@ The integration test package compiles locally and requires `DATABASE_URL` to exe
 
 ## Delivery boundary
 
-The working tree is complete but has not been pushed. The repository also has no configured Git author identity, so creating a commit requires the owner's chosen `user.name` and `user.email`.
+The local implementation commit is `0b982be` and has not been pushed. It uses the repository-local transparent agent identity `Codex <codex@localhost>`; no global Git identity was changed. The remote currently has no `main` branch.
