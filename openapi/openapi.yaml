@@ -1,0 +1,290 @@
+openapi: 3.0.3
+info:
+  title: NexusAPI
+  version: 1.0.0
+  description: Reusable API foundation and incremental Loyal Fitness read API.
+servers:
+  - url: /
+paths:
+  /healthz:
+    get:
+      operationId: health
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+  /readyz:
+    get:
+      operationId: readiness
+      security: []
+      responses:
+        '200':
+          description: Dependencies are ready.
+        '503':
+          description: A required dependency is unavailable.
+  /api/v1/users/me:
+    get:
+      operationId: currentUser
+      security: [{bearerAuth: []}]
+      responses:
+        '200':
+          description: Authenticated principal.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PrincipalEnvelope'}
+        '401': {description: Authentication required.}
+  /api/v1/mobile/dashboard:
+    get:
+      operationId: mobileDashboard
+      security: [{bearerAuth: []}]
+      responses:
+        '200':
+          description: Mobile dashboard read model.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MobileDashboardEnvelope'}
+        '501': {description: Read adapter is not configured.}
+  /api/v1/members:
+    get:
+      operationId: listMembers
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Status'}
+        - {name: q, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: Bounded member page.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MemberPageEnvelope'}
+        '400': {description: Invalid pagination.}
+        '501': {description: Read adapter is not configured.}
+  /api/v1/pt-sessions:
+    get:
+      operationId: listPTSessions
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Status'}
+        - {$ref: '#/components/parameters/From'}
+        - {$ref: '#/components/parameters/To'}
+      responses:
+        '200':
+          description: Bounded PT session page.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PTSessionPageEnvelope'}
+        '501': {description: Read adapter is not configured.}
+  /api/v1/finance/summary:
+    get:
+      operationId: financeSummary
+      security: [{bearerAuth: []}]
+      responses:
+        '200':
+          description: Finance summary read model.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FinanceSummaryEnvelope'}
+        '501': {description: Read adapter is not configured.}
+  /api/v1/attendance/check-in:
+    post:
+      operationId: checkIn
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CheckCommand'}
+      responses:
+        '201':
+          description: Check-in event accepted.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AttendanceEventEnvelope'}
+        '400': {description: Invalid command body.}
+        '501': {description: Attendance service is not configured.}
+  /api/v1/attendance/check-out:
+    post:
+      operationId: checkOut
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CheckCommand'}
+      responses:
+        '201':
+          description: Check-out event accepted.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AttendanceEventEnvelope'}
+        '400': {description: Invalid command body.}
+        '501': {description: Attendance service is not configured.}
+  /api/v1/devices/heartbeat:
+    post:
+      operationId: deviceHeartbeat
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/HeartbeatCommand'}
+      responses:
+        '201':
+          description: Device heartbeat accepted.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AttendanceEventEnvelope'}
+        '400': {description: Invalid heartbeat body.}
+        '501': {description: Attendance service is not configured.}
+components:
+  schemas:
+    Meta:
+      type: object
+      required: [has_more]
+      properties:
+        next_cursor: {type: string}
+        has_more: {type: boolean}
+    Principal:
+      type: object
+      required: [subject, roles]
+      properties:
+        subject: {type: string}
+        roles:
+          type: array
+          items: {type: string}
+    Member:
+      type: object
+      required: [id, display_name, status]
+      properties:
+        id: {type: string}
+        display_name: {type: string}
+        status: {type: string}
+    PTSession:
+      type: object
+      required: [id, member_id, starts_at, status]
+      properties:
+        id: {type: string}
+        member_id: {type: string}
+        starts_at: {type: string, format: date-time}
+        status: {type: string}
+    FinanceSummary:
+      type: object
+      required: [period, total, currency]
+      properties:
+        period: {type: string}
+        total: {type: integer, format: int64}
+        currency: {type: string}
+    MobileDashboard:
+      type: object
+      required: [member_count, upcoming_pt_sessions]
+      properties:
+        member_count: {type: integer, minimum: 0}
+        upcoming_pt_sessions: {type: integer, minimum: 0}
+    CheckCommand:
+      type: object
+      additionalProperties: false
+      required: [qr_token, occurred_at]
+      properties:
+        member_id: {type: string, maxLength: 128}
+        qr_token: {type: string, minLength: 1, maxLength: 4096, writeOnly: true}
+        occurred_at: {type: string, format: date-time}
+    HeartbeatCommand:
+      type: object
+      additionalProperties: false
+      required: [observed_at]
+      properties:
+        firmware_version: {type: string, maxLength: 128}
+        observed_at: {type: string, format: date-time}
+    AttendanceEvent:
+      type: object
+      required: [id, kind, device_id, occurred_at]
+      properties:
+        id: {type: string}
+        kind: {type: string}
+        member_id: {type: string}
+        device_id: {type: string}
+        occurred_at: {type: string, format: date-time}
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: {type: string}
+        message: {type: string}
+        request_id: {type: string}
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error: {$ref: '#/components/schemas/Error'}
+    PrincipalEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data: {$ref: '#/components/schemas/Principal'}
+        request_id: {type: string}
+    MemberPageEnvelope:
+      type: object
+      required: [data, meta, request_id]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/Member'}
+        meta: {$ref: '#/components/schemas/Meta'}
+        request_id: {type: string}
+    PTSessionPageEnvelope:
+      type: object
+      required: [data, meta, request_id]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/PTSession'}
+        meta: {$ref: '#/components/schemas/Meta'}
+        request_id: {type: string}
+    FinanceSummaryEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data: {$ref: '#/components/schemas/FinanceSummary'}
+        request_id: {type: string}
+    MobileDashboardEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data: {$ref: '#/components/schemas/MobileDashboard'}
+        request_id: {type: string}
+    AttendanceEventEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data: {$ref: '#/components/schemas/AttendanceEvent'}
+        request_id: {type: string}
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+    Cursor:
+      name: cursor
+      in: query
+      schema: {type: string}
+    Status:
+      name: status
+      in: query
+      schema: {type: string, maxLength: 40}
+    From:
+      name: from
+      in: query
+      schema: {type: string, maxLength: 40}
+    To:
+      name: to
+      in: query
+      schema: {type: string, maxLength: 40}

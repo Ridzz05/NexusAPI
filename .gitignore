@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+
+/bin/
+/nexus-api
+/tmp/
+/coverage.out
+/coverage.html
+
+# Local tooling and editor files
+.DS_Store
+.idea/
+.vscode/
