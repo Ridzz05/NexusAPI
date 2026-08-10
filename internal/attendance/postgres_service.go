@@ -3,7 +3,6 @@ package attendance
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -23,12 +22,19 @@ const maxEventClockSkew = 24 * time.Hour
 const maxSerializableAttempts = 3
 
 type PostgresService struct {
-	pool  *pgxpool.Pool
-	clock func() time.Time
+	pool        *pgxpool.Pool
+	identifiers IdentifierResolver
+	clock       func() time.Time
 }
 
-func NewPostgresService(pool *pgxpool.Pool) *PostgresService {
-	return &PostgresService{pool: pool, clock: time.Now}
+func NewPostgresService(pool *pgxpool.Pool, resolvers ...IdentifierResolver) *PostgresService {
+	var resolver IdentifierResolver
+	if len(resolvers) > 0 {
+		resolver = resolvers[0]
+	} else {
+		resolver = NewPostgresIdentifierRegistry(pool)
+	}
+	return &PostgresService{pool: pool, identifiers: resolver, clock: time.Now}
 }
 
 func (s *PostgresService) CheckIn(ctx context.Context, actor Actor, command CheckCommand) (Event, error) {
@@ -101,9 +107,19 @@ func (s *PostgresService) changeState(ctx context.Context, actor Actor, command 
 	if command.OccurredAt.Before(now.Add(-maxEventClockSkew)) || command.OccurredAt.After(now.Add(maxEventClockSkew)) {
 		return Event{}, ErrInvalidCommand
 	}
-	memberID := strings.TrimSpace(command.MemberID)
+	if s.identifiers == nil {
+		return Event{}, errors.New("attendance identifier resolver is not configured")
+	}
+	identifier, err := s.identifiers.ResolveQR(ctx, command.QRToken)
+	if err != nil {
+		return Event{}, err
+	}
+	memberID := strings.TrimSpace(identifier.MemberID)
 	if memberID == "" {
-		memberID = actor.Subject
+		return Event{}, ErrIdentifierNotFound
+	}
+	if assertion := strings.TrimSpace(command.MemberID); assertion != "" && assertion != memberID {
+		return Event{}, ErrIdentifierMismatch
 	}
 	if memberID != actor.Subject && !actor.CanManageOthers() {
 		return Event{}, ErrNotAuthorized
@@ -155,14 +171,13 @@ func (s *PostgresService) changeStateOnce(ctx context.Context, actor Actor, comm
 		return Event{}, err
 	}
 	event := Event{ID: eventID, Kind: kind, MemberID: memberID, DeviceID: actor.Subject, OccurredAt: command.OccurredAt}
-	qrHash := sha256.Sum256([]byte(command.QRToken))
 	if err := queries.InsertAttendanceEvent(ctx, dbgen.InsertAttendanceEventParams{
 		ID:           event.ID,
 		Kind:         event.Kind,
 		MemberID:     pgtype.Text{String: event.MemberID, Valid: true},
 		DeviceID:     event.DeviceID,
 		ActorSubject: actor.Subject,
-		QrTokenHash:  pgtype.Text{String: hex.EncodeToString(qrHash[:]), Valid: true},
+		QrTokenHash:  pgtype.Text{String: hashQRToken(command.QRToken), Valid: true},
 		OccurredAt:   pgtype.Timestamptz{Time: event.OccurredAt, Valid: true},
 		CreatedAt:    pgtype.Timestamptz{Time: now, Valid: true},
 	}); err != nil {
@@ -199,7 +214,7 @@ func waitForTransactionRetry(ctx context.Context, attempt int) error {
 func newID() (string, error) {
 	bytes := make([]byte, 16)
 	if _, err := rand.Read(bytes); err != nil {
-		return "", fmt.Errorf("generate event ID: %w", err)
+		return "", fmt.Errorf("generate ID: %w", err)
 	}
 	return hex.EncodeToString(bytes), nil
 }

@@ -2,7 +2,7 @@
 
 Reusable, API-first backend foundation for mobile, web, desktop, kiosk, device, and internal clients.
 
-The project follows the goals in [`NexusAPI.md`](NexusAPI.md): a modular monolith, PostgreSQL-first persistence, explicit authorization, bounded collection access, structured observability, and incremental adapters for existing systems.
+The project follows [`GOALS.md`](GOALS.md) and the engineering rules in [`IMPLEMENT.md`](IMPLEMENT.md): a modular monolith, PostgreSQL-first persistence, explicit authorization, bounded collection access, structured observability, and incremental adapters for existing systems. The current hardening scope is recorded in [`CODEX_HARDENING.md`](CODEX_HARDENING.md).
 
 ## Quick start
 
@@ -43,7 +43,7 @@ GET /api/v1/finance/summary?actor_subject=...&actor_roles=...&actor_scope=self|a
 GET /api/v1/mobile/dashboard?actor_subject=...&actor_roles=...&actor_scope=self|all
 ```
 
-Responses use the NexusAPI JSON envelope. The source service remains responsible for enforcing the actor scope before returning data.
+Responses use the NexusAPI JSON envelope. Error responses have the stable shape `{"error":{"code":"...","message":"..."},"request_id":"..."}`. The source service remains responsible for enforcing the actor scope before returning data.
 
 Attendance/kiosk commands are exposed as a strict contract:
 
@@ -53,7 +53,7 @@ POST /api/v1/attendance/check-out
 POST /api/v1/devices/heartbeat
 ```
 
-They reject unknown JSON fields and oversized bodies. The new attendance domain persists events and member state in NexusAPI PostgreSQL tables after startup migrations; this does not move or mutate any legacy Laravel write path. QR tokens are stored only as SHA-256 hashes.
+They reject unknown JSON fields and oversized bodies. The new attendance domain persists events and member state in NexusAPI PostgreSQL tables after startup migrations; this does not move or mutate any legacy Laravel write path. Attendance resolves `qr_token` through an internal identifier registry before selecting a member. `member_id` is accepted only as an optional compatibility assertion and must match the server-resolved member. Unknown identifiers return `422`, revoked or expired identifiers return `403`, and mismatched assertions return `409`. QR tokens are stored only as SHA-256 hashes. SHA-256 is appropriate only because QR values must be high-entropy opaque tokens.
 
 After a successful attendance transaction, NexusAPI enqueues the event in the same PostgreSQL transaction and a background dispatcher publishes it on Redis topic `nexus.attendance.events`. Delivery is at-least-once: consumers must deduplicate by event ID. PostgreSQL remains authoritative and Redis failures do not lose the event.
 
@@ -99,6 +99,8 @@ Loyal Fitness endpoints are exposed as stable v1 routes, but their read model is
 
 Secrets are environment-only and are never logged. Production startup rejects missing, weak, or documented placeholder JWT secrets and missing database/Redis URLs. CORS origins must be explicit in production. Every request receives a request ID, and error responses never expose stack traces or internal error text.
 
+Set `TRUSTED_PROXY_CIDRS` only to the network ranges of reverse proxies that are actually controlled by the deployment. Forwarding headers are ignored for direct clients. `HTTP_READ_HEADER_TIMEOUT` defaults to 5 seconds and `HTTP_MAX_HEADER_BYTES` defaults to 1 MiB; both are validated at startup.
+
 Startup migrations take a PostgreSQL advisory lock, so concurrent API instances cannot apply the same migration simultaneously. Attendance state changes use serializable transactions with bounded retry for PostgreSQL serialization failures and deadlocks.
 
 ## Docker
@@ -112,3 +114,11 @@ docker compose up -d --build
 The production image runs as a non-root user and exposes port 8080. PostgreSQL and Redis are health-checked before the API is started.
 
 For a non-container Linux VPS, install the binary as `/usr/local/bin/nexus-api`, place environment values in `/etc/nexus-api/nexus-api.env`, create the `nexus` service user, enable [`deploy/nexus-api.service`](deploy/nexus-api.service), and configure [`deploy/Caddyfile.example`](deploy/Caddyfile.example) as the reverse proxy.
+
+For a containerized production profile, copy `.env.production.example` to `.env.production`, replace every placeholder, and run from the repository root:
+
+```bash
+docker compose --env-file .env.production -f deploy/compose.prod.yml up -d --build
+```
+
+The production profile exposes only Caddy on ports 80/443. PostgreSQL and Redis are attached to an internal Docker network and have no host port bindings. Keep `TRUSTED_PROXY_CIDRS` aligned with the configured Caddy network if the Compose subnet is changed.

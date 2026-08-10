@@ -37,6 +37,10 @@ jobs:
           context: .
           push: false
           tags: nexus-api:ci
+      - name: Validate production Compose profile
+        run: |
+          cp .env.production.example .env.production
+          docker compose --env-file .env.production -f deploy/compose.prod.yml config --quiet
 
   integration:
     runs-on: ubuntu-latest

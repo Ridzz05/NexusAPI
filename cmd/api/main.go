@@ -77,7 +77,7 @@ func main() {
 		Logger:        logger,
 		Authenticator: authenticator,
 		LoyalFitness:  loyalFitnessReader,
-		Attendance:    attendance.NewPostgresService(pool),
+		Attendance:    attendance.NewPostgresService(pool, attendance.NewPostgresIdentifierRegistry(pool)),
 		Readiness: func(ctx context.Context) error {
 			if err := pool.Ping(ctx); err != nil {
 				return err

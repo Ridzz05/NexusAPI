@@ -16,13 +16,13 @@ type Envelope[T any] struct {
 }
 
 type ErrorEnvelope struct {
-	Error APIError `json:"error"`
+	Error     APIError `json:"error"`
+	RequestID string   `json:"request_id"`
 }
 
 type APIError struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	RequestID string `json:"request_id,omitempty"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 func JSON(w http.ResponseWriter, r *http.Request, status int, data any, meta *Meta) {
@@ -38,11 +38,10 @@ func JSON(w http.ResponseWriter, r *http.Request, status int, data any, meta *Me
 func Error(w http.ResponseWriter, r *http.Request, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(ErrorEnvelope{Error: APIError{
-		Code:      code,
-		Message:   message,
+	_ = json.NewEncoder(w).Encode(ErrorEnvelope{
+		Error:     APIError{Code: code, Message: message},
 		RequestID: RequestID(r.Context()),
-	}})
+	})
 }
 
 func DecodeJSON(w http.ResponseWriter, r *http.Request, target any, maxBytes int64) error {

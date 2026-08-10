@@ -47,12 +47,39 @@ func TestPostgresAttendanceStateAndOutbox(t *testing.T) {
 		}
 		_, _ = pool.Exec(context.Background(), `DELETE FROM attendance_member_state WHERE member_id = $1`, memberID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM attendance_device_heartbeats WHERE device_id = $1`, deviceID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM attendance_identifiers WHERE member_id = $1`, memberID)
 	}()
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	service := NewPostgresService(pool)
+	registry := NewPostgresIdentifierRegistry(pool)
+	if _, err := registry.RegisterQR(ctx, memberID, "qr-in", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.RegisterQR(ctx, memberID, "qr-out", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.RegisterQR(ctx, memberID, "qr-in", nil); !errors.Is(err, ErrIdentifierAlreadyExists) {
+		t.Fatalf("expected duplicate QR registration to fail, got %v", err)
+	}
+	var storedRawToken int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM attendance_identifiers WHERE member_id = $1 AND token_hash = $2`, memberID, "qr-in").Scan(&storedRawToken); err != nil {
+		t.Fatal(err)
+	}
+	if storedRawToken != 0 {
+		t.Fatal("raw QR token was persisted")
+	}
+	if _, err := registry.ResolveQR(ctx, "unknown-qr"); !errors.Is(err, ErrIdentifierNotFound) {
+		t.Fatalf("expected unknown QR to be rejected, got %v", err)
+	}
+	if err := testIdentifierLifecycle(ctx, registry, memberID, now); err != nil {
+		t.Fatal(err)
+	}
+	service := NewPostgresService(pool, registry)
 	service.clock = func() time.Time { return now }
 	memberActor := Actor{Subject: memberID, Roles: []string{"member"}}
+	if _, err := service.CheckIn(ctx, memberActor, CheckCommand{MemberID: "other-member", QRToken: "qr-in", OccurredAt: now}); !errors.Is(err, ErrIdentifierMismatch) {
+		t.Fatalf("expected member assertion mismatch, got %v", err)
+	}
 	checkIn, err := service.CheckIn(ctx, memberActor, CheckCommand{QRToken: "qr-in", OccurredAt: now})
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +96,7 @@ func TestPostgresAttendanceStateAndOutbox(t *testing.T) {
 		t.Fatalf("QR token was not stored as a SHA-256 hash: %q", qrHash)
 	}
 
-	if _, err := service.CheckIn(ctx, memberActor, CheckCommand{QRToken: "qr-in-duplicate", OccurredAt: now}); !errors.Is(err, ErrConflict) {
+	if _, err := service.CheckIn(ctx, memberActor, CheckCommand{QRToken: "qr-in", OccurredAt: now}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected duplicate check-in conflict, got %v", err)
 	}
 	checkOut, err := service.CheckOut(ctx, memberActor, CheckCommand{QRToken: "qr-out", OccurredAt: now})
@@ -77,7 +104,7 @@ func TestPostgresAttendanceStateAndOutbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventIDs = append(eventIDs, checkOut.ID)
-	if _, err := service.CheckOut(ctx, memberActor, CheckCommand{QRToken: "qr-out-duplicate", OccurredAt: now}); !errors.Is(err, ErrConflict) {
+	if _, err := service.CheckOut(ctx, memberActor, CheckCommand{QRToken: "qr-out", OccurredAt: now}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected duplicate check-out conflict, got %v", err)
 	}
 
@@ -113,6 +140,27 @@ func TestPostgresAttendanceStateAndOutbox(t *testing.T) {
 	}
 }
 
+func testIdentifierLifecycle(ctx context.Context, registry *PostgresIdentifierRegistry, memberID string, now time.Time) error {
+	expiredAt := now.Add(-time.Minute)
+	if _, err := registry.RegisterQR(ctx, memberID, "expired-qr", &expiredAt); err != nil {
+		return err
+	}
+	if _, err := registry.ResolveQR(ctx, "expired-qr"); !errors.Is(err, ErrIdentifierExpired) {
+		return fmt.Errorf("expected expired QR error, got %w", err)
+	}
+	revoked, err := registry.RegisterQR(ctx, memberID, "revoked-qr", nil)
+	if err != nil {
+		return err
+	}
+	if err := registry.Revoke(ctx, revoked.ID); err != nil {
+		return err
+	}
+	if _, err := registry.ResolveQR(ctx, "revoked-qr"); !errors.Is(err, ErrIdentifierRevoked) {
+		return fmt.Errorf("expected revoked QR error, got %w", err)
+	}
+	return nil
+}
+
 func TestConcurrentCheckInsResolveThroughSerializableRetry(t *testing.T) {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -137,9 +185,14 @@ func TestConcurrentCheckInsResolveThroughSerializableRetry(t *testing.T) {
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM nexus_event_outbox WHERE payload->>'member_id' = $1`, memberID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM attendance_events WHERE member_id = $1`, memberID)
 		_, _ = pool.Exec(cleanupCtx, `DELETE FROM attendance_member_state WHERE member_id = $1`, memberID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM attendance_identifiers WHERE member_id = $1`, memberID)
 	}()
 
-	service := NewPostgresService(pool)
+	registry := NewPostgresIdentifierRegistry(pool)
+	if _, err := registry.RegisterQR(ctx, memberID, "concurrent-qr", nil); err != nil {
+		t.Fatal(err)
+	}
+	service := NewPostgresService(pool, registry)
 	service.clock = func() time.Time { return now }
 	actor := Actor{Subject: memberID, Roles: []string{"member"}}
 	start := make(chan struct{})

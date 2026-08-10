@@ -27,6 +27,17 @@ type AttendanceEvent struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
 
+type AttendanceIdentifier struct {
+	ID             string             `json:"id"`
+	MemberID       string             `json:"member_id"`
+	IdentifierType string             `json:"identifier_type"`
+	TokenHash      string             `json:"token_hash"`
+	Status         string             `json:"status"`
+	ExpiresAt      pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
 type AttendanceMemberState struct {
 	MemberID  string             `json:"member_id"`
 	State     string             `json:"state"`

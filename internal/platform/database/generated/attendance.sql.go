@@ -11,6 +11,28 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getAttendanceIdentifierByHash = `-- name: GetAttendanceIdentifierByHash :one
+SELECT id, member_id, identifier_type, token_hash, status, expires_at, created_at, updated_at
+FROM attendance_identifiers
+WHERE identifier_type = 'qr' AND token_hash = $1
+`
+
+func (q *Queries) GetAttendanceIdentifierByHash(ctx context.Context, tokenHash string) (AttendanceIdentifier, error) {
+	row := q.db.QueryRow(ctx, getAttendanceIdentifierByHash, tokenHash)
+	var i AttendanceIdentifier
+	err := row.Scan(
+		&i.ID,
+		&i.MemberID,
+		&i.IdentifierType,
+		&i.TokenHash,
+		&i.Status,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getAttendanceMemberState = `-- name: GetAttendanceMemberState :one
 SELECT state
 FROM attendance_member_state
@@ -53,6 +75,53 @@ func (q *Queries) InsertAttendanceEvent(ctx context.Context, arg InsertAttendanc
 		arg.CreatedAt,
 	)
 	return err
+}
+
+const insertAttendanceIdentifier = `-- name: InsertAttendanceIdentifier :exec
+INSERT INTO attendance_identifiers (
+    id, member_id, identifier_type, token_hash, status, expires_at, created_at, updated_at
+)
+VALUES ($1, $2, 'qr', $3, 'active', $4, $5, $6)
+`
+
+type InsertAttendanceIdentifierParams struct {
+	ID        string             `json:"id"`
+	MemberID  string             `json:"member_id"`
+	TokenHash string             `json:"token_hash"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) InsertAttendanceIdentifier(ctx context.Context, arg InsertAttendanceIdentifierParams) error {
+	_, err := q.db.Exec(ctx, insertAttendanceIdentifier,
+		arg.ID,
+		arg.MemberID,
+		arg.TokenHash,
+		arg.ExpiresAt,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
+const revokeAttendanceIdentifier = `-- name: RevokeAttendanceIdentifier :execrows
+UPDATE attendance_identifiers
+SET status = 'revoked', updated_at = $2
+WHERE id = $1
+`
+
+type RevokeAttendanceIdentifierParams struct {
+	ID        string             `json:"id"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) RevokeAttendanceIdentifier(ctx context.Context, arg RevokeAttendanceIdentifierParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeAttendanceIdentifier, arg.ID, arg.UpdatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const upsertAttendanceDeviceHeartbeat = `-- name: UpsertAttendanceDeviceHeartbeat :exec

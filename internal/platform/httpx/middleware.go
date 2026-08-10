@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
-	"net"
 	"net/http"
+	"net/netip"
 	"runtime/debug"
 	"sync"
 	"time"
+
+	platformnetwork "github.com/Ridzz05/NexusAPI/internal/platform/network"
 )
 
 func RecoveryMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
@@ -96,14 +98,17 @@ type clientLimit struct {
 	seen   time.Time
 }
 
-func NewRateLimitMiddleware(requestsPerSecond, burst int, next http.Handler) http.Handler {
+func NewRateLimitMiddleware(requestsPerSecond, burst int, trusted []netip.Prefix, next http.Handler) http.Handler {
 	limiter := &ipRateLimiter{
 		clients: make(map[string]*clientLimit),
 		rps:     float64(requestsPerSecond),
 		burst:   float64(burst),
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key := clientIP(r)
+		key := "invalid-peer"
+		if address := platformnetwork.ClientIP(r, trusted); address.IsValid() {
+			key = address.String()
+		}
 		if !limiter.allow(key, time.Now()) {
 			w.Header().Set("Retry-After", "1")
 			Error(w, r, http.StatusTooManyRequests, "rate_limited", "too many requests")
@@ -165,12 +170,7 @@ func RequestTimeoutMiddleware(timeout time.Duration, next http.Handler) http.Han
 		buffer := &bufferedWriter{header: make(http.Header), status: http.StatusOK}
 		done := make(chan struct{})
 		go func() {
-			defer func() {
-				if recover() != nil {
-					Error(buffer, r, http.StatusInternalServerError, "internal_error", "an internal error occurred")
-				}
-				close(done)
-			}()
+			defer close(done)
 			next.ServeHTTP(buffer, r.WithContext(ctx))
 		}()
 		select {
@@ -229,12 +229,4 @@ func (w *bufferedWriter) copyTo(target http.ResponseWriter) {
 	}
 	target.WriteHeader(w.status)
 	_, _ = target.Write(w.body.Bytes())
-}
-
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }

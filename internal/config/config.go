@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -13,27 +14,30 @@ import (
 // Config contains process configuration. Secrets are intentionally represented
 // here only long enough to construct their consumers and are never logged.
 type Config struct {
-	AppEnv              string
-	HTTPAddr            string
-	DatabaseURL         string
-	RedisURL            string
-	JWTSecret           string
-	JWTIssuer           string
-	JWTAudience         string
-	DBMaxConns          int32
-	DBMinConns          int32
-	CORSAllowedOrigins  []string
-	RateLimitRPS        int
-	RateLimitBurst      int
-	HTTPReadTimeout     time.Duration
-	HTTPWriteTimeout    time.Duration
-	HTTPIdleTimeout     time.Duration
-	HTTPRequestTimeout  time.Duration
-	ShutdownTimeout     time.Duration
-	LoyalFitnessBaseURL string
-	LoyalFitnessToken   string
-	LoyalFitnessTimeout time.Duration
-	ReadCacheTTL        time.Duration
+	AppEnv                string
+	HTTPAddr              string
+	DatabaseURL           string
+	RedisURL              string
+	TrustedProxyCIDRs     []netip.Prefix
+	JWTSecret             string
+	JWTIssuer             string
+	JWTAudience           string
+	DBMaxConns            int32
+	DBMinConns            int32
+	CORSAllowedOrigins    []string
+	RateLimitRPS          int
+	RateLimitBurst        int
+	HTTPReadTimeout       time.Duration
+	HTTPReadHeaderTimeout time.Duration
+	HTTPWriteTimeout      time.Duration
+	HTTPIdleTimeout       time.Duration
+	HTTPRequestTimeout    time.Duration
+	HTTPMaxHeaderBytes    int
+	ShutdownTimeout       time.Duration
+	LoyalFitnessBaseURL   string
+	LoyalFitnessToken     string
+	LoyalFitnessTimeout   time.Duration
+	ReadCacheTTL          time.Duration
 }
 
 func Load() (Config, error) {
@@ -57,6 +61,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	readHeaderTimeout, err := durationEnv("HTTP_READ_HEADER_TIMEOUT", 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
 	writeTimeout, err := durationEnv("HTTP_WRITE_TIMEOUT", 15*time.Second)
 	if err != nil {
 		return Config{}, err
@@ -66,6 +74,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	requestTimeout, err := durationEnv("HTTP_REQUEST_TIMEOUT", 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	maxHeaderBytes, err := intEnv("HTTP_MAX_HEADER_BYTES", 1<<20)
 	if err != nil {
 		return Config{}, err
 	}
@@ -83,28 +95,35 @@ func Load() (Config, error) {
 	}
 
 	origins := splitCSV(env("CORS_ALLOWED_ORIGINS", ""))
+	trustedProxyCIDRs, err := parseCIDRs(env("TRUSTED_PROXY_CIDRS", ""))
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
-		AppEnv:              env("APP_ENV", "development"),
-		HTTPAddr:            env("HTTP_ADDR", ":8080"),
-		DatabaseURL:         env("DATABASE_URL", ""),
-		RedisURL:            env("REDIS_URL", ""),
-		JWTSecret:           env("JWT_SECRET", ""),
-		JWTIssuer:           env("JWT_ISSUER", ""),
-		JWTAudience:         env("JWT_AUDIENCE", ""),
-		DBMaxConns:          maxConns,
-		DBMinConns:          minConns,
-		CORSAllowedOrigins:  origins,
-		RateLimitRPS:        rateLimitRPS,
-		RateLimitBurst:      rateLimitBurst,
-		HTTPReadTimeout:     readTimeout,
-		HTTPWriteTimeout:    writeTimeout,
-		HTTPIdleTimeout:     idleTimeout,
-		HTTPRequestTimeout:  requestTimeout,
-		ShutdownTimeout:     shutdownTimeout,
-		LoyalFitnessBaseURL: env("LOYAL_FITNESS_BASE_URL", ""),
-		LoyalFitnessToken:   env("LOYAL_FITNESS_TOKEN", ""),
-		LoyalFitnessTimeout: loyalFitnessTimeout,
-		ReadCacheTTL:        readCacheTTL,
+		AppEnv:                env("APP_ENV", "development"),
+		HTTPAddr:              env("HTTP_ADDR", ":8080"),
+		DatabaseURL:           env("DATABASE_URL", ""),
+		RedisURL:              env("REDIS_URL", ""),
+		TrustedProxyCIDRs:     trustedProxyCIDRs,
+		JWTSecret:             env("JWT_SECRET", ""),
+		JWTIssuer:             env("JWT_ISSUER", ""),
+		JWTAudience:           env("JWT_AUDIENCE", ""),
+		DBMaxConns:            maxConns,
+		DBMinConns:            minConns,
+		CORSAllowedOrigins:    origins,
+		RateLimitRPS:          rateLimitRPS,
+		RateLimitBurst:        rateLimitBurst,
+		HTTPReadTimeout:       readTimeout,
+		HTTPReadHeaderTimeout: readHeaderTimeout,
+		HTTPWriteTimeout:      writeTimeout,
+		HTTPIdleTimeout:       idleTimeout,
+		HTTPRequestTimeout:    requestTimeout,
+		HTTPMaxHeaderBytes:    maxHeaderBytes,
+		ShutdownTimeout:       shutdownTimeout,
+		LoyalFitnessBaseURL:   env("LOYAL_FITNESS_BASE_URL", ""),
+		LoyalFitnessToken:     env("LOYAL_FITNESS_TOKEN", ""),
+		LoyalFitnessTimeout:   loyalFitnessTimeout,
+		ReadCacheTTL:          readCacheTTL,
 	}
 	return cfg, cfg.Validate()
 }
@@ -122,8 +141,8 @@ func (c Config) Validate() error {
 	if c.RateLimitRPS < 1 || c.RateLimitBurst < 1 {
 		return errors.New("RATE_LIMIT_RPS and RATE_LIMIT_BURST must be positive")
 	}
-	if c.HTTPReadTimeout <= 0 || c.HTTPWriteTimeout <= 0 || c.HTTPIdleTimeout <= 0 || c.HTTPRequestTimeout <= 0 || c.ShutdownTimeout <= 0 {
-		return errors.New("HTTP and shutdown timeouts must be positive")
+	if c.HTTPReadTimeout <= 0 || c.HTTPReadHeaderTimeout <= 0 || c.HTTPWriteTimeout <= 0 || c.HTTPIdleTimeout <= 0 || c.HTTPRequestTimeout <= 0 || c.ShutdownTimeout <= 0 || c.HTTPMaxHeaderBytes <= 0 {
+		return errors.New("HTTP timeouts, shutdown timeout, and HTTP_MAX_HEADER_BYTES must be positive")
 	}
 	if c.LoyalFitnessTimeout <= 0 || c.ReadCacheTTL <= 0 {
 		return errors.New("LOYAL_FITNESS_TIMEOUT and READ_CACHE_TTL must be positive")
@@ -214,6 +233,22 @@ func splitCSV(value string) []string {
 		}
 	}
 	return result
+}
+
+func parseCIDRs(value string) ([]netip.Prefix, error) {
+	parts := splitCSV(value)
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	prefixes := make([]netip.Prefix, 0, len(parts))
+	for _, part := range parts {
+		prefix, err := netip.ParsePrefix(part)
+		if err != nil {
+			return nil, fmt.Errorf("TRUSTED_PROXY_CIDRS contains invalid CIDR %q: %w", part, err)
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return prefixes, nil
 }
 
 func contains(values []string, target string) bool {

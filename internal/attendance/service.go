@@ -8,9 +8,14 @@ import (
 )
 
 var (
-	ErrInvalidCommand = errors.New("invalid attendance command")
-	ErrNotAuthorized  = errors.New("attendance command is not authorized")
-	ErrConflict       = errors.New("attendance command conflicts with current state")
+	ErrInvalidCommand          = errors.New("invalid attendance command")
+	ErrNotAuthorized           = errors.New("attendance command is not authorized")
+	ErrConflict                = errors.New("attendance command conflicts with current state")
+	ErrIdentifierNotFound      = errors.New("attendance identifier was not found")
+	ErrIdentifierRevoked       = errors.New("attendance identifier was revoked")
+	ErrIdentifierExpired       = errors.New("attendance identifier expired")
+	ErrIdentifierMismatch      = errors.New("attendance identifier does not match member")
+	ErrIdentifierAlreadyExists = errors.New("attendance identifier already exists")
 )
 
 type Actor struct {
@@ -55,6 +60,28 @@ type Event struct {
 	MemberID   string    `json:"member_id,omitempty"`
 	DeviceID   string    `json:"device_id"`
 	OccurredAt time.Time `json:"occurred_at"`
+}
+
+// MemberIdentifier is the resolved server-side identity for an attendance
+// token. TokenHash is included for internal audit/tests only; raw QR material
+// is intentionally absent from this type and from persistence.
+type MemberIdentifier struct {
+	ID             string
+	MemberID       string
+	IdentifierType string
+	TokenHash      string
+	Status         string
+	ExpiresAt      *time.Time
+}
+
+type IdentifierResolver interface {
+	ResolveQR(context.Context, string) (MemberIdentifier, error)
+}
+
+type IdentifierRegistry interface {
+	IdentifierResolver
+	RegisterQR(context.Context, string, string, *time.Time) (MemberIdentifier, error)
+	Revoke(context.Context, string) error
 }
 
 type Service interface {

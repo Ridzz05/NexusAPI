@@ -20,22 +20,24 @@ import (
 
 func testConfig() config.Config {
 	return config.Config{
-		AppEnv:              "test",
-		HTTPAddr:            ":8080",
-		JWTSecret:           "01234567890123456789012345678901",
-		DatabaseURL:         "postgres://localhost/nexus",
-		RedisURL:            "redis://localhost:6379",
-		DBMaxConns:          10,
-		DBMinConns:          2,
-		RateLimitRPS:        100,
-		RateLimitBurst:      100,
-		HTTPReadTimeout:     10 * time.Second,
-		HTTPWriteTimeout:    10 * time.Second,
-		HTTPIdleTimeout:     10 * time.Second,
-		HTTPRequestTimeout:  10 * time.Second,
-		ShutdownTimeout:     10 * time.Second,
-		LoyalFitnessTimeout: 5 * time.Second,
-		ReadCacheTTL:        30 * time.Second,
+		AppEnv:                "test",
+		HTTPAddr:              ":8080",
+		JWTSecret:             "01234567890123456789012345678901",
+		DatabaseURL:           "postgres://localhost/nexus",
+		RedisURL:              "redis://localhost:6379",
+		DBMaxConns:            10,
+		DBMinConns:            2,
+		RateLimitRPS:          100,
+		RateLimitBurst:        100,
+		HTTPReadTimeout:       10 * time.Second,
+		HTTPReadHeaderTimeout: 5 * time.Second,
+		HTTPWriteTimeout:      10 * time.Second,
+		HTTPIdleTimeout:       10 * time.Second,
+		HTTPRequestTimeout:    10 * time.Second,
+		HTTPMaxHeaderBytes:    1 << 20,
+		ShutdownTimeout:       10 * time.Second,
+		LoyalFitnessTimeout:   5 * time.Second,
+		ReadCacheTTL:          30 * time.Second,
 	}
 }
 
@@ -60,6 +62,14 @@ func TestHealthIncludesRequestIDAndStableEnvelope(t *testing.T) {
 	}
 	if body.Data["status"] != "ok" || body.RequestID == "" {
 		t.Fatalf("unexpected health response: %s", recorder.Body.String())
+	}
+}
+
+func TestHTTPServerAppliesHeaderHardening(t *testing.T) {
+	cfg := testConfig()
+	server := New(cfg, Dependencies{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}).HTTPServer()
+	if server.ReadHeaderTimeout != cfg.HTTPReadHeaderTimeout || server.MaxHeaderBytes != cfg.HTTPMaxHeaderBytes {
+		t.Fatalf("HTTP hardening not applied: read_header_timeout=%s max_header_bytes=%d", server.ReadHeaderTimeout, server.MaxHeaderBytes)
 	}
 }
 
@@ -203,6 +213,22 @@ func TestAttendanceCommandIsStrictAndDoesNotFabricateWrites(t *testing.T) {
 	}
 }
 
+func TestAttendanceBodySizeIsBounded(t *testing.T) {
+	api := New(testConfig(), Dependencies{
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Authenticator: scopedAuthenticator{},
+		Attendance:    &recordingAttendance{},
+	})
+	body := `{"qr_token":"` + strings.Repeat("a", 70<<10) + `","occurred_at":"2026-08-10T10:00:00Z"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/attendance/check-in", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer accepted-in-test")
+	recorder := httptest.NewRecorder()
+	api.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"code":"invalid_attendance_command"`) {
+		t.Fatalf("unexpected oversized body response: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestAttendanceServiceReceivesAuthenticatedActor(t *testing.T) {
 	service := &recordingAttendance{}
 	api := New(testConfig(), Dependencies{
@@ -216,6 +242,35 @@ func TestAttendanceServiceReceivesAuthenticatedActor(t *testing.T) {
 	api.Handler().ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusCreated || service.actor.Subject != "user-1" || service.command.QRToken != "qr-1" {
 		t.Fatalf("unexpected attendance call: status=%d actor=%#v command=%#v body=%s", recorder.Code, service.actor, service.command, recorder.Body.String())
+	}
+}
+
+func TestAttendanceIdentifierErrorsUseStableHTTPContract(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{name: "unknown", err: attendance.ErrIdentifierNotFound, status: http.StatusUnprocessableEntity, code: "identifier_not_found"},
+		{name: "revoked", err: attendance.ErrIdentifierRevoked, status: http.StatusForbidden, code: "identifier_revoked"},
+		{name: "expired", err: attendance.ErrIdentifierExpired, status: http.StatusForbidden, code: "identifier_expired"},
+		{name: "mismatch", err: attendance.ErrIdentifierMismatch, status: http.StatusConflict, code: "identifier_mismatch"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			api := New(testConfig(), Dependencies{
+				Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+				Authenticator: scopedAuthenticator{},
+				Attendance:    errorAttendance{err: tt.err},
+			})
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/attendance/check-in", strings.NewReader(`{"qr_token":"qr-1","occurred_at":"2026-08-10T10:00:00Z"}`))
+			req.Header.Set("Authorization", "Bearer accepted-in-test")
+			recorder := httptest.NewRecorder()
+			api.Handler().ServeHTTP(recorder, req)
+			if recorder.Code != tt.status || !strings.Contains(recorder.Body.String(), `"code":"`+tt.code+`"`) {
+				t.Fatalf("unexpected identifier response: status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
 	}
 }
 
@@ -258,6 +313,22 @@ func (oversizedReader) MobileDashboard(context.Context, loyalfitness.Actor) (loy
 type recordingAttendance struct {
 	actor   attendance.Actor
 	command attendance.CheckCommand
+}
+
+type errorAttendance struct {
+	err error
+}
+
+func (s errorAttendance) CheckIn(context.Context, attendance.Actor, attendance.CheckCommand) (attendance.Event, error) {
+	return attendance.Event{}, s.err
+}
+
+func (s errorAttendance) CheckOut(context.Context, attendance.Actor, attendance.CheckCommand) (attendance.Event, error) {
+	return attendance.Event{}, s.err
+}
+
+func (s errorAttendance) Heartbeat(context.Context, attendance.Actor, attendance.HeartbeatCommand) (attendance.Event, error) {
+	return attendance.Event{}, s.err
 }
 
 func (s *recordingAttendance) CheckIn(_ context.Context, actor attendance.Actor, command attendance.CheckCommand) (attendance.Event, error) {

@@ -1,0 +1,4 @@
+{$NEXUS_API_HOST} {
+	encode gzip
+	reverse_proxy api:8080
+}

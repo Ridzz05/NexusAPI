@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,35 @@ import (
 	"testing"
 	"time"
 )
+
+func TestErrorUsesTopLevelRequestID(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	recorder := httptest.NewRecorder()
+	RequestIDMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		Error(w, r, http.StatusBadRequest, "invalid", "invalid request")
+	})).ServeHTTP(recorder, req)
+	var body struct {
+		Error     APIError `json:"error"`
+		RequestID string   `json:"request_id"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Code != "invalid" || body.RequestID == "" {
+		t.Fatalf("unexpected error envelope: %#v", body)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	var nested map[string]string
+	if err := json.Unmarshal(raw["error"], &nested); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := nested["request_id"]; exists {
+		t.Fatal("request_id must remain at the top level of an error envelope")
+	}
+}
 
 func TestParsePageRequestBoundsCollections(t *testing.T) {
 	req := httptest.NewRequest("GET", "/members?limit=101", nil)
@@ -58,10 +88,10 @@ func TestSecurityHeadersAreSetByMiddleware(t *testing.T) {
 }
 
 func TestRequestTimeoutContainsHandlerPanic(t *testing.T) {
-	handler := RequestTimeoutMiddleware(time.Second, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := RecoveryMiddleware(slog.New(slog.NewTextHandler(io.Discard, nil)), http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic("test panic")
 	}))
-	handler = RecoveryMiddleware(slog.New(slog.NewTextHandler(io.Discard, nil)), handler)
+	handler = RequestTimeoutMiddleware(time.Second, handler)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if recorder.Code != http.StatusInternalServerError {

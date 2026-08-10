@@ -66,13 +66,13 @@ func (s *Server) Handler() http.Handler {
 
 	return httpx.RequestIDMiddleware(
 		httpx.SecurityHeadersMiddleware(
-			httpx.RecoveryMiddleware(s.deps.Logger,
-				httpx.LoggingMiddleware(s.deps.Logger,
-					httpx.CORSMiddleware(s.cfg.CORSAllowedOrigins,
-						httpx.NewRateLimitMiddleware(s.cfg.RateLimitRPS, s.cfg.RateLimitBurst,
-							httpx.RequestTimeoutMiddleware(s.cfg.HTTPRequestTimeout,
-								httpx.RecoveryMiddleware(s.deps.Logger, mux)),
-						),
+			httpx.LoggingMiddleware(s.deps.Logger,
+				httpx.CORSMiddleware(s.cfg.CORSAllowedOrigins,
+					httpx.NewRateLimitMiddleware(s.cfg.RateLimitRPS, s.cfg.RateLimitBurst, s.cfg.TrustedProxyCIDRs,
+						// Recovery must be inside RequestTimeout because the timeout
+						// middleware executes the handler in a separate goroutine.
+						httpx.RequestTimeoutMiddleware(s.cfg.HTTPRequestTimeout,
+							httpx.RecoveryMiddleware(s.deps.Logger, mux)),
 					),
 				),
 			),
@@ -82,11 +82,13 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) HTTPServer() *http.Server {
 	return &http.Server{
-		Addr:         s.cfg.HTTPAddr,
-		Handler:      s.Handler(),
-		ReadTimeout:  s.cfg.HTTPReadTimeout,
-		WriteTimeout: s.cfg.HTTPWriteTimeout,
-		IdleTimeout:  s.cfg.HTTPIdleTimeout,
+		Addr:              s.cfg.HTTPAddr,
+		Handler:           s.Handler(),
+		ReadTimeout:       s.cfg.HTTPReadTimeout,
+		ReadHeaderTimeout: s.cfg.HTTPReadHeaderTimeout,
+		WriteTimeout:      s.cfg.HTTPWriteTimeout,
+		IdleTimeout:       s.cfg.HTTPIdleTimeout,
+		MaxHeaderBytes:    s.cfg.HTTPMaxHeaderBytes,
 	}
 }
 
@@ -319,6 +321,14 @@ func (s *Server) writeAttendanceError(w http.ResponseWriter, r *http.Request, er
 		httpx.Error(w, r, http.StatusForbidden, "forbidden", "you do not have permission to perform this action")
 	case errors.Is(err, attendance.ErrConflict):
 		httpx.Error(w, r, http.StatusConflict, "attendance_conflict", "the attendance state does not allow this action")
+	case errors.Is(err, attendance.ErrIdentifierNotFound):
+		httpx.Error(w, r, http.StatusUnprocessableEntity, "identifier_not_found", "the attendance identifier is invalid")
+	case errors.Is(err, attendance.ErrIdentifierRevoked):
+		httpx.Error(w, r, http.StatusForbidden, "identifier_revoked", "the attendance identifier has been revoked")
+	case errors.Is(err, attendance.ErrIdentifierExpired):
+		httpx.Error(w, r, http.StatusForbidden, "identifier_expired", "the attendance identifier has expired")
+	case errors.Is(err, attendance.ErrIdentifierMismatch):
+		httpx.Error(w, r, http.StatusConflict, "identifier_mismatch", "the attendance identifier does not match member_id")
 	default:
 		s.deps.Logger.Error("attendance service failed", "request_id", httpx.RequestID(r.Context()), "error", err)
 		httpx.Error(w, r, http.StatusInternalServerError, "internal_error", "an internal error occurred")

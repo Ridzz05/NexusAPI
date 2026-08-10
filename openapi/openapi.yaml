@@ -106,6 +106,7 @@ paths:
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/UnprocessableEntity'}
         '501': {$ref: '#/components/responses/NotImplemented'}
   /api/v1/attendance/check-out:
     post:
@@ -125,6 +126,7 @@ paths:
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/UnprocessableEntity'}
         '501': {$ref: '#/components/responses/NotImplemented'}
   /api/v1/devices/heartbeat:
     post:
@@ -193,7 +195,10 @@ components:
       additionalProperties: false
       required: [qr_token, occurred_at]
       properties:
-        member_id: {type: string, maxLength: 128}
+        member_id:
+          type: string
+          maxLength: 128
+          description: Optional backwards-compatible assertion; the QR registry remains authoritative.
         qr_token: {type: string, minLength: 1, maxLength: 4096, writeOnly: true}
         occurred_at: {type: string, format: date-time}
     HeartbeatCommand:
@@ -218,12 +223,12 @@ components:
       properties:
         code: {type: string}
         message: {type: string}
-        request_id: {type: string}
     ErrorEnvelope:
       type: object
-      required: [error]
+      required: [error, request_id]
       properties:
         error: {$ref: '#/components/schemas/Error'}
+        request_id: {type: string}
     PrincipalEnvelope:
       type: object
       required: [data, request_id]
@@ -284,6 +289,11 @@ components:
           schema: {$ref: '#/components/schemas/ErrorEnvelope'}
     Conflict:
       description: The requested state transition conflicts with current state.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    UnprocessableEntity:
+      description: The identifier or request value cannot be accepted.
       content:
         application/json:
           schema: {$ref: '#/components/schemas/ErrorEnvelope'}

@@ -9,8 +9,10 @@ import (
 )
 
 type Querier interface {
+	GetAttendanceIdentifierByHash(ctx context.Context, tokenHash string) (AttendanceIdentifier, error)
 	GetAttendanceMemberState(ctx context.Context, memberID string) (string, error)
 	InsertAttendanceEvent(ctx context.Context, arg InsertAttendanceEventParams) error
+	InsertAttendanceIdentifier(ctx context.Context, arg InsertAttendanceIdentifierParams) error
 	InsertEventOutbox(ctx context.Context, arg InsertEventOutboxParams) error
 	// This directory is the sqlc boundary for domain queries.
 	// Domain modules should add explicit, bounded queries here rather than using SELECT *.
@@ -18,6 +20,7 @@ type Querier interface {
 	ListPendingEventOutbox(ctx context.Context, limit int32) ([]ListPendingEventOutboxRow, error)
 	MarkEventOutboxFailure(ctx context.Context, arg MarkEventOutboxFailureParams) error
 	MarkEventOutboxPublished(ctx context.Context, id string) error
+	RevokeAttendanceIdentifier(ctx context.Context, arg RevokeAttendanceIdentifierParams) (int64, error)
 	UpsertAttendanceDeviceHeartbeat(ctx context.Context, arg UpsertAttendanceDeviceHeartbeatParams) error
 	UpsertAttendanceMemberState(ctx context.Context, arg UpsertAttendanceMemberStateParams) error
 }
